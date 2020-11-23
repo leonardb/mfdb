@@ -1,0 +1,21 @@
+{application, mfdb,
+ [
+  {description, "Mnesia-like API for FoundationDB backend"},
+  {vsn, "0.0.2"},
+  {modules, [mfdb, mfdb_app,
+             mfdb_manager, mfdb_sup]},
+  {registered, []},
+  {mod, {mfdb_app, []}},
+  {env, []},
+  {applications,
+   [kernel,
+    stdlib,
+    crypto,
+    public_key,
+    ssl,
+    lager,
+    erlfdb,
+    gproc]},
+  {licenses, ["Apache 2.0"]},
+  {links, [{"Github", "https://github.com/leonardb/mfdb"}]}
+ ]}.

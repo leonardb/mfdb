@@ -30,7 +30,7 @@ init([]) ->
                        [];
                    _ ->
                        [?CHILD(mfdb_table_sup, supervisor),
-                        ?CHILD(mfdb_watchersup, supervisor),
+                        ?CHILD(mfdb_watcher_sup, supervisor),
                         ?CHILD(mfdb_manager, worker)]
                end,
     {ok, { {one_for_all, 5, 10}, Children} }.

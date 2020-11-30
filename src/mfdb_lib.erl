@@ -12,20 +12,27 @@
          encode_prefix/2,
          save_parts/4,
          idx_matches/3,
-         idx_count_key/3,
          table_count/1,
          table_data_size/1,
-         update_counter/3,
-         validate_reply_/1]).
+         update_counter/4,
+         validate_reply_/1,
+         unixtime/0,
+         unixminute/0,
+         expired/1,
+         sort/1,
+         sort/2]).
 
 -export([clear_table/3]).
 
 -export([flow/2,
          validate_record/1,
          validate_indexes/2,
-         types_validation_fun/1]).
+         check_record/3]).
 
 -include("mfdb.hrl").
+
+-define(SECONDS_TO_EPOCH, (719528*24*3600)).
+-define(ENTRIES_PER_COUNTER, 50).
 
 -type flow_fun()    :: fun((...) -> any()).
 -type flow_args()   :: list(any()).
@@ -53,48 +60,56 @@ flow_([{Fun, Args} | Rest], Match, Match) when is_function(Fun) ->
 flow_([{Fun, _Args} | _Rest], _Match, _Match) when not is_function(Fun) ->
     {error, invalid_flow};
 flow_(_, _Match, Res) ->
+    %% Here be dragons... You need to be careful when chaining the funs
+    %% together and make sure all funs except final are restricted
+    %% to Match or {err, any{}} type returns
     %% Non-matching or final result, so return
     Res.
+
+sort([]) ->
+    [];
+sort([X | _] = L) when is_tuple(X) ->
+    lists:keysort(2, L);
+sort(L) ->
+    lists:sort(L).
 
 %% @doc
 %% insert or replace a record. If a record is unchanged it is not updated
 %% in order to reduce the load potentially added by indexes
 %% @end
-put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes}, PkValue, Record) ->
-    %% Operation is on a data table
-    EncKey = encode_key(TabPfx, {<<"dd">>, PkValue}),
-    V1 = term_to_binary(Record),
-    Size = byte_size(V1),
-    %% Add size header as first 32-bits of value
-    V = <<Size:32, V1/binary>>,
+put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
     Tx = erlfdb:create_transaction(Db),
+    %% Operation is on a data table
+    EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
+    EncRecord = term_to_binary(Record),
+    Size = byte_size(EncRecord),
     {DoSave, SizeInc, CountInc} =
         case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
             <<"mfdb_ref", OldSize:32, OldMfdbRefPartId/binary>> ->
                 %% Remove any index values that may exist
-                OldRecord = parts_value_(OldMfdbRefPartId, TabPfx, Tx),
+                OldEncRecord = parts_value_(OldMfdbRefPartId, TabPfx, Tx),
                 %% Has something in the record changed?
-                RecordChanged = OldRecord =/= V1,
+                RecordChanged = OldEncRecord =/= EncRecord,
                 case RecordChanged of
                     true ->
                         %% Remove any old index pointers
-                        ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldRecord), Indexes),
+                        ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
                         %% Replacing entry, increment by size diff
-                        {<<"pt">>, PartHcaVal} = sext:decode(OldMfdbRefPartId),
-                        Start = encode_prefix(TabPfx, {<<"pt">>, PartHcaVal, <<"_">>, '_'}),
+                        {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(OldMfdbRefPartId),
+                        Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
                         ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Start)),
                         %% Replacing entry, only changes the size
                         {true, ((OldSize * -1) + Size), 0};
                     false ->
                         {false, 0, 0}
                 end;
-            <<OldSize:32, EncRecord/binary>> when EncRecord =/= V ->
+            <<OldSize:32, OldEncRecord/binary>> when OldEncRecord =/= EncRecord ->
                 %% Record exists, but has changed
                 %% Remove any old index pointers
-                ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes),
+                ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
                 %% Replacing entry, only changes the size
                 {true, ((OldSize * -1) + Size), 0};
-            <<_OldSize:32, EncRecord/binary>> when EncRecord =:= V ->
+            <<_OldSize:32, OldEncRecord/binary>> when OldEncRecord =:= EncRecord ->
                 %% Record already exists and is unchanged
                 {false, 0, 0};
             not_found ->
@@ -103,29 +118,112 @@ put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes}, PkVa
         end,
     case DoSave of
         true ->
-            case Size > ?MAX_VALUE_SIZE of
-                true ->
-                    %% Save the new parts
-                    MfdbRefPartId = save_parts(Tx, TabPfx, HcaRef, V),
-                    ok = erlfdb:wait(erlfdb:set(Tx, EncKey, <<"mfdb_ref", Size:32, MfdbRefPartId/binary>>));
-                false ->
-                    ok = erlfdb:wait(erlfdb:set(Tx, EncKey, V))
-            end,
+            put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
             ok = create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes),
             %% Update the 'size' of stored data
-            ok = inc_counter_(Tx, tbl_size_key(TabPfx), SizeInc),
+            ok = inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc),
             %% Update the count of stored records
-            ok = inc_counter_(Tx, tbl_count_key(TabPfx), CountInc),
+            ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
+            %% Create/update any TTLs
+            ok = ttl_add(Tx, TabPfx, Ttl, PkValue),
+            %% and finally commit the changes
             ok = erlfdb:wait(erlfdb:commit(Tx));
         false ->
-            ok = erlfdb:wait(erlfdb:cancel(Tx))
-    end,
-    ok.
+            %% Update any TTLs
+            ok = ttl_add(Tx, TabPfx, Ttl, PkValue),
+            ok = erlfdb:wait(erlfdb:commit(Tx))
+    end.
 
-inc_counter_(_Tx, _Key, 0) ->
+put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)
+  when Size > ?MAX_VALUE_SIZE ->
+    %% Record split into multiple parts
+    MfdbRefPartId = save_parts(Tx, TabPfx, HcaRef, EncRecord),
+    ok = erlfdb:wait(erlfdb:set(Tx, EncKey, <<"mfdb_ref", Size:32, MfdbRefPartId/binary>>));
+put_(Tx, _TabPfx, _HcaRef, Size, EncKey, Size, EncRecord) ->
+    ok = erlfdb:wait(erlfdb:set(Tx, EncKey, <<Size:32, EncRecord/binary>>)).
+
+ttl_add(_Tx, _TabPfx, undefined, _Key) ->
     ok;
-inc_counter_(Tx, Key, Inc) ->
+ttl_add(?IS_DB = Db, TabPfx, TTL, Key) ->
+    Tx = erlfdb:create_transaction(Db),
+    ok = ttl_add(Tx, TabPfx, TTL, Key),
+    erlfdb:wait(erlfdb:commit(Tx));
+ttl_add(?IS_TX = Tx, TabPfx, TTL, Key) ->
+    %% We need to be able to lookup in both directions
+    %% since we use a range query for reaping expired records
+    %% and we also need to remove the previous entry if a record gets updated
+    ok = ttl_remove(Tx, TabPfx, TTL, Key),
+    Now = unixminute(), %% aligned to current minute + 1 minute
+    erlfdb:wait(erlfdb:set(Tx, encode_key(TabPfx, {?TTL_TO_KEY_PFX, Now, Key}), <<>>)),
+    erlfdb:wait(erlfdb:set(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}), integer_to_binary(Now, 10))).
+
+ttl_remove(_Tx, _TabPfx, undefined, _Key) ->
+    ok;
+ttl_remove(?IS_DB = Db, TabPfx, TTL, Key) ->
+    Tx = erlfdb:create_transaction(Db),
+    ok = ttl_remove(Tx, TabPfx, TTL, Key),
+    erlfdb:wait(erlfdb:commit(Tx));
+ttl_remove(?IS_TX = Tx, TabPfx, _TTL, Key) ->
+    TtlK2T = encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}),
+    case erlfdb:wait(erlfdb:get(Tx, TtlK2T)) of
+        not_found ->
+            ok;
+        Added ->
+            OldTtlT2K = {?TTL_TO_KEY_PFX, binary_to_integer(Added, 10), Key},
+            erlfdb:wait(erlfdb:clear(Tx, encode_key(TabPfx, OldTtlT2K)))
+
+    end,
+    erlfdb:wait(erlfdb:clear(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}))).
+
+inc_counter_(_Tx, _TblPfx, _KeyPfx, 0) ->
+    ok;
+inc_counter_(Tx, TblPfx, KeyPfx0, Inc) when Inc < 0 ->
+    %% decrement a random counter associated with the key.
+    %% We need to read all keys since we cannot decrement counter where counter =< 0
+    KeyPfx = case KeyPfx0 of
+                 K0 when is_binary(K0) ->
+                     {K0, ?FDB_WC};
+                 {K0, V0} ->
+                     {K0, V0, ?FDB_WC}
+             end,
+    Pfx = encode_prefix(TblPfx, KeyPfx),
+    case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
+        [] ->
+            ok;
+        Counters0 ->
+            lists:foldl(
+              fun(_, ok) ->
+                      %% no more deduction necessary
+                      ok;
+                 (_, {_, 0}) ->
+                      %% no more deduction necessary
+                      ok;
+                 ({_, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0}) when OldVal =:= 0 ->
+                      %% Skip zero-value keys
+                      {waiting, Inc0};
+                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0}) when (OldVal + Inc0) >= 0 ->
+                      %% Full adjustment of counter
+                      ok = erlfdb:wait(erlfdb:add(Tx, Key, Inc0));
+                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0}) when OldVal > 0 ->
+                      %% Partial adjustment of counter
+                      Rem = OldVal + Inc0,
+                      ok = erlfdb:wait(erlfdb:add(Tx, Key, OldVal * -1)),
+                      {waiting, Rem}
+              end, {waiting, Inc}, shuffle(Counters0))
+    end;
+inc_counter_(Tx, TblPfx, Key0, Inc) ->
+    %% Increment random counter
+    Key1 = case Key0 of
+               K0 when is_binary(K0) ->
+                   {K0, rand:uniform(?ENTRIES_PER_COUNTER)};
+               {K0, V0} ->
+                   {K0, V0, rand:uniform(?ENTRIES_PER_COUNTER)}
+           end,
+    Key = encode_key(TblPfx, Key1),
     erlfdb:wait(erlfdb:add(Tx, Key, Inc)).
+
+shuffle(List) ->
+    [X || {_, X} <- lists:sort([{rand:uniform(), Item} || Item <- List])].
 
 create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes) when is_tuple(Indexes) ->
     create_any_indexes_(Tx, TabPfx, PkValue, Record, tuple_to_list(Indexes));
@@ -136,20 +234,23 @@ create_any_indexes_(Tx, TabPfx, PkValue, Record, [undefined | Rest]) ->
 create_any_indexes_(Tx, TabPfx, PkValue, Record, [#idx{pos = Pos, data_key = IdxDataKey, count_key = IdxCountKey} | Rest]) ->
     Value = element(Pos, Record),
     %% Increment the per-value counter for an index
-    EncCountKey = idx_count_key(TabPfx, IdxCountKey, Value),
-    inc_counter_(Tx, EncCountKey, 1),
+    inc_counter_(Tx, TabPfx, {IdxCountKey, Value}, 1),
     ok = erlfdb:wait(erlfdb:set(Tx, encode_key(TabPfx, {IdxDataKey, {Value, PkValue}}), <<>>)),
     create_any_indexes_(Tx, TabPfx, PkValue, Record, Rest).
 
 parts_value_(MfdbRefPartId, TabPfx, Tx) ->
-    {<<"pt">>, PartHcaVal} = sext:decode(MfdbRefPartId),
-    Start = encode_prefix(TabPfx, {<<"pt">>, PartHcaVal, <<"_">>, '_'}),
+    {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(MfdbRefPartId),
+    Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
     Parts = erlfdb:wait(erlfdb:get_range_startswith(Tx, Start)),
     bin_join_parts(Parts).
 
-delete(#st{db = ?IS_DB = Db, pfx = TabPfx, index = Indexes}, PkValue) ->
+delete(#st{db = ?IS_DB = Db} = St, PkValue) ->
     %% deleting a data item
     Tx = erlfdb:create_transaction(Db),
+    ok = delete(St#st{db = Tx}, PkValue),
+    erlfdb:wait(erlfdb:commit(Tx));
+delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
+    %% deleting a data item
     EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
     {IncSize, IncCount} =
         case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
@@ -160,8 +261,8 @@ delete(#st{db = ?IS_DB = Db, pfx = TabPfx, index = Indexes}, PkValue) ->
                 EncRecord = parts_value_(MfdbRefPartId, TabPfx, Tx),
                 ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes),
                 %% Remove parts of large value
-                {<<"pt">>, PartHcaVal} = sext:decode(MfdbRefPartId),
-                Start = encode_prefix(TabPfx, {<<"pt">>, PartHcaVal, <<"_">>, '_'}),
+                {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(MfdbRefPartId),
+                Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
                 ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Start)),
                 {OldSize * -1, -1};
             <<OldSize:32, EncRecord/binary>> ->
@@ -170,11 +271,10 @@ delete(#st{db = ?IS_DB = Db, pfx = TabPfx, index = Indexes}, PkValue) ->
                 {OldSize * -1, -1}
         end,
     %% decrement size
-    inc_counter_(Tx, tbl_size_key(TabPfx), IncSize),
+    inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, IncSize),
     %% decrement item count
-    inc_counter_(Tx, tbl_count_key(TabPfx), IncCount),
-    ok = erlfdb:wait(erlfdb:clear(Tx, EncKey)),
-    ok = erlfdb:wait(erlfdb:commit(Tx)).
+    inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, IncCount),
+    ok = erlfdb:wait(erlfdb:clear(Tx, EncKey)).
 
 remove_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes) when is_tuple(Indexes) ->
     remove_any_indexes_(Tx, TabPfx, PkValue, Record, tuple_to_list(Indexes));
@@ -184,38 +284,36 @@ remove_any_indexes_(Tx, TabPfx, PkValue, Record, [undefined | Rest]) ->
     remove_any_indexes_(Tx, TabPfx, PkValue, Record, Rest);
 remove_any_indexes_(Tx, TabPfx, PkValue, Record, [#idx{pos = Pos, data_key = IdxDataKey, count_key = IdxCountKey} | Rest]) ->
     Value = element(Pos, Record),
-    EncCountKey = idx_count_key(TabPfx, IdxCountKey, Value),
-    inc_counter_(Tx, EncCountKey, -1),
+    inc_counter_(Tx, TabPfx, {IdxCountKey, Value}, -1),
     ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, encode_prefix(TabPfx, {IdxDataKey, {Value, PkValue}}))),
     remove_any_indexes_(Tx, TabPfx, PkValue, Record, Rest).
 
 idx_matches(#st{db = Db, index = Indexes, pfx = TabPfx}, IdxPos, Value) ->
     #idx{count_key = CountPfx} = element(IdxPos, Indexes),
-    IdxCountKey = idx_count_key(TabPfx, CountPfx, Value),
-    case erlfdb:get(Db, IdxCountKey) of
-        not_found ->
+    Pfx = encode_prefix(TabPfx, {CountPfx, Value, ?FDB_WC}),
+    case erlfdb:get_range_startswith(Db, Pfx) of
+        [] ->
             0;
-        <<Count:64/unsigned-little-integer>> ->
-            Count
+        KVs ->
+            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
     end.
 
 table_data_size(#st{db = Db, pfx = TabPfx}) ->
-    Key = tbl_size_key(TabPfx),
-    case erlfdb:get(Db, Key) of
-        not_found ->
+    Pfx = encode_prefix(TabPfx, {?TABLE_SIZE_PREFIX, ?FDB_WC}),
+    case erlfdb:get_range_startswith(Db, Pfx) of
+        [] ->
             0;
-        <<Count:64/unsigned-little-integer>> ->
-            %% Convert byes to words
-            erlang:round(Count / erlang:system_info(wordsize))
+        KVs ->
+            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
     end.
 
 table_count(#st{db = Db, pfx = TabPfx}) ->
-    Key = tbl_count_key(TabPfx),
-    case erlfdb:get(Db, Key) of
-        not_found ->
+    Pfx = encode_prefix(TabPfx, {?TABLE_COUNT_PREFIX, ?FDB_WC}),
+    case erlfdb:get_range_startswith(Db, Pfx) of
+        [] ->
             0;
-        <<Count:64/unsigned-little-integer>> ->
-            Count
+        KVs ->
+            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
     end.
 
 bin_split(Bin) ->
@@ -244,12 +342,16 @@ decode_key(<<PfxBytes:8, TabPfx/binary>>,
             %% data index reference key
             %% so wrap in a tuple
             {idx, {{IdxVal, PkVal}}};
-        {<<"dd">>, Key} ->
+        {?DATA_PREFIX, Key} ->
             Key;
-        {<<"ic">>, Key} ->
+        {?IDX_COUNT_PREFIX, Key} ->
             {cnt_idx, Key};
-        {<<"pt">>, PartHcaVal} ->
+        {?DATA_PART_PREFIX, PartHcaVal} ->
             PartHcaVal;
+        {?TTL_TO_KEY_PFX, _, Key} ->
+            Key;
+        {?KEY_TO_TTL_PFX, Key} ->
+            Key;
         BadVal ->
             exit({TabPfx, BadVal})
     end.
@@ -268,33 +370,24 @@ encode_key(TabPfx, Key) ->
 encode_prefix(TabPfx, Key) ->
     <<TabPfx/binary, (sext:prefix(Key))/binary>>.
 
-tbl_count_key(TabPfx) ->
-    encode_key(TabPfx, {<<"tc">>}).
-
-tbl_size_key(TabPfx) ->
-    encode_key(TabPfx, {<<"ts">>}).
-
-idx_count_key(TabPfx, IdxId, Value) ->
-    encode_key(TabPfx, {IdxId, Value}).
-
 save_parts(?IS_TX = Tx, TabPfx, Hca, Bin) ->
     PartId = erlfdb_hca:allocate(Hca, Tx),
-    PartKey = sext:encode({<<"pt">>, PartId}),
+    PartKey = sext:encode({?DATA_PART_PREFIX, PartId}),
     ok = save_parts_(Tx, TabPfx, PartId, 0, Bin),
     PartKey.
 
 save_parts_(_Tx, _TabPfx, _PartId, _PartInc, <<>>) ->
     ok;
 save_parts_(Tx, TabPfx, PartId, PartInc, <<Part:?MAX_VALUE_SIZE/binary, Rest/binary>>) ->
-    Key = encode_key(TabPfx, {<<"pt">>, PartId, <<"_">>, PartInc}),
+    Key = encode_key(TabPfx, {?DATA_PART_PREFIX, PartId, <<"_">>, PartInc}),
     ok = erlfdb:wait(erlfdb:set(Tx, Key, Part)),
     save_parts_(Tx, TabPfx, PartId, PartInc + 1, Rest);
 save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
-    Key = encode_key(TabPfx, {<<"pt">>, PartId, <<"_">>, PartInc}),
+    Key = encode_key(TabPfx, {?DATA_PART_PREFIX, PartId, <<"_">>, PartInc}),
     ok = erlfdb:wait(erlfdb:set(Tx, Key, Tail)),
     save_parts_(Tx, TabPfx, PartId, PartInc + 1, <<>>).
 
-update_counter(?IS_DB = Db, EncKey, Incr) ->
+update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
     %% Atomic counter increment
     %% Mnesia counters are dirty only, and cannot go below zero
     %%  dirty_update_counter({Tab, Key}, Incr) -> NewVal | exit({aborted, Reason})
@@ -326,37 +419,50 @@ update_counter(?IS_DB = Db, EncKey, Incr) ->
     %%    we abort instead of creating a counter with value of '0'
     %% NOTE: FDB counters will wrap: EG Incr 0 by -1 wraps to max value
     Tx = erlfdb:create_transaction(Db),
-    try do_update_counter(Tx, EncKey, Incr)
+    try do_update_counter(Tx, TabPfx, Key, Incr)
     catch
         error:{erlfdb_error,1025}:_Stack ->
-            lager:info("Transaction cancelled, retrying"),
+            error_logger:error_msg("Update counter transaction cancelled, retrying"),
             erlfdb:wait(erlfdb:cancel(Tx)),
-            update_counter(Db, EncKey, Incr)
+            update_counter(Db, TabPfx, Key, Incr)
     end.
 
-do_update_counter(Tx, EncKey, Increment) ->
-    Old = case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
-              not_found ->
-                  erlfdb:wait(erlfdb:add(Tx, EncKey, 0)),
-                  0;
-              <<OldVal:64/unsigned-little-integer>> ->
-                  OldVal
-          end,
-    case (Old + Increment) of
-        N when N < 0 ->
-            %% Set counter to zero
-            ok = erlfdb:wait(erlfdb:set(Tx, EncKey, <<0:64/unsigned-little-integer>>));
-        _N ->
-            %% Increment the counter
-            %% This could very well not be what was expected
-            %% since the counter may have been incremented
-            %% by other transactions
-            ok = erlfdb:wait(erlfdb:add(Tx, EncKey, Increment))
+do_update_counter(Tx, TabPfx, Key0, Increment) when Increment < 0 ->
+    Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key0, ?FDB_WC}),
+    case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
+        [] ->
+            ok;
+        Counters0 ->
+            lists:foldl(
+              fun(_, ok) ->
+                      ok;
+                 ({Key, <<OldVal:64/unsigned-little-integer>>}, waiting) when (OldVal + Increment) >= 0 ->
+                      ok = erlfdb:wait(erlfdb:add(Tx, Key, Increment));
+                 (_, R) ->
+                      %% Skip zero-value keys
+                      R
+              end, waiting, shuffle(Counters0))
     end,
+    NewVal = counter_read_(Tx, TabPfx, Key0),
+    erlfdb:wait(erlfdb:commit(Tx)),
+    NewVal;
+do_update_counter(Tx, TabPfx, Key, Increment) ->
+    %% Increment random counter
+    Key = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
+    erlfdb:wait(erlfdb:add(Tx, Key, Increment)),
     %% Read the updated counter value
-    <<NewVal:64/unsigned-little-integer>> = erlfdb:wait(erlfdb:get(Tx, EncKey)),
+    NewVal = counter_read_(Tx, TabPfx, Key),
     erlfdb:wait(erlfdb:commit(Tx)),
     NewVal.
+
+counter_read_(Tx, TabPfx, Key) ->
+    Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+    case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
+        [] ->
+            0;
+        KVs ->
+            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
+    end.
 
 validate_indexes([], _Record) ->
     ok;
@@ -409,66 +515,37 @@ validate_fields_([{Name, Types} | Rest])
 validate_fields_([H | _]) ->
     {error, invalid_record_field, H}.
 
-%% Ensure that no value on an indexed field exceeds the key size restriction
-value_size_guard_([], _TblPfx, _Fields, _Obj) ->
-    ok;
-value_size_guard_([#idx{pos = P, data_key = IdxDataKey} | Rest], TblPfx, Fields, Obj) ->
-    IdxVal = element(P, Obj),
-    IdxId = element(2, Obj),
-    Idx = {{IdxVal, IdxId}},
-    EncKey = mfdb_lib:encode_key(TblPfx, {IdxDataKey, Idx}),
-    ByteSize = byte_size(EncKey),
-    case ByteSize of
-        X when X > ?MAX_KEY_SIZE ->
-            {error, field_name(lists:nth(P - 1, Fields))};
-        _ ->
-            value_size_guard_(Rest, TblPfx, Fields, Obj)
-    end.
-
 field_name(N) when is_atom(N) ->
     N;
 field_name({N, _Type}) when is_atom(N) ->
     N.
 
-types_validation_fun(#st{pfx = TblPfx, fields = Fields, index = Indexes0}) ->
-    %% Using the field definition generate a Fun
-    %% which validates the `type` of values provided
-    %% before a record is inserted. This is strict typing,
-    %% only supporting a single type per field
-    %% IE it cannot support
-    %% `undefined | null | binary()` type constructs
-    Indexes = [Idx || #idx{} = Idx <- tuple_to_list(Indexes0)],
-    fun(Rec) ->
-            case value_size_guard_(Indexes, TblPfx, Fields, Rec) of
-                ok ->
-                    RecValues = tl(tuple_to_list(Rec)),
-                    type_checks_(RecValues, Fields);
-                Error ->
-                    Error
-            end
-    end.
+check_record(Rec0, Fields, Index) ->
+    Rec = tuple_to_list(Rec0),
+    Idx = tuple_to_list(Index),
+    Zipped = tl(lists:zip3(Rec, [undefined | Fields], Idx)),
+    check_record_(Zipped).
 
-type_checks_([], []) ->
+check_record_([]) ->
     true;
-type_checks_([_Val | RVals], [Name | RTypes]) when is_atom(Name) ->
-    type_checks_(RVals, RTypes);
-type_checks_([_Val | RVals], [{_Name, any} | RTypes]) ->
-    type_checks_(RVals, RTypes);
-type_checks_([_Val | RVals], [{_Name, term} | RTypes]) ->
-    type_checks_(RVals, RTypes);
-type_checks_([Val | RVals], [{Name, Type} | RTypes]) when is_atom(Type) ->
-    case type_check_(Val, Type) of
-        true ->
-            type_checks_(RVals, RTypes);
-        false ->
-            {error, invalid_type, Name}
-    end;
-type_checks_([Val | RVals], [{Name, Types} | RTypes]) when is_list(Types) ->
-    case lists:any(fun(T) -> type_check_(Val, T) end, Types) of
-        true ->
-            type_checks_(RVals, RTypes);
-        false ->
-            {error, invalid_type, Name}
+check_record_([{_Val, Field, undefined} | Rest]) when is_atom(Field) ->
+    check_record_(Rest);
+check_record_([{Val, Field, #idx{}} | Rest]) ->
+    case byte_size(term_to_binary(Val)) of
+        X when X > ?MAX_KEY_SIZE ->
+            {error, {field_name(Field), too_large_for_index}};
+        _ ->
+            case Field of
+                Field when is_atom(Field) ->
+                    check_record_(Rest);
+                {FieldName, Type} ->
+                    case type_check_(Val, Type) of
+                        true ->
+                            check_record_(Rest);
+                        false ->
+                            {error, {FieldName, list_to_atom("not_a_" ++ atom_to_list(Type))}}
+                    end
+            end
     end.
 
 type_check_(undefined, undefined) ->
@@ -539,18 +616,17 @@ type_check_(_InVal, _) ->
 
 clear_table(Db, TblPfx, Indexes) ->
     ok = clear_indexes_(Db, TblPfx, Indexes),
+    ok = clear_ttls_(Db, TblPfx),
     clear_data_(Db, TblPfx).
 
 clear_data_(Db, TblPfx) ->
     %% Clear counters
-    TblCountKey = tbl_count_key(TblPfx),
-    ok = erlfdb:clear(Db, TblCountKey),
-    TblSizeKey = tbl_size_key(TblPfx),
-    ok = erlfdb:clear(Db, TblSizeKey),
+    ok = erlfdb:clear_range_startswith(Db, encode_prefix(TblPfx, {?TABLE_COUNT_PREFIX, ?FDB_WC})),
+    ok = erlfdb:clear_range_startswith(Db, encode_prefix(TblPfx, {?TABLE_SIZE_PREFIX, ?FDB_WC})),
     %% Clear 'parts'
-    ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {<<"pt">>, ?FDB_WC, ?FDB_WC, ?FDB_WC})),
+    ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {?DATA_PART_PREFIX, ?FDB_WC, ?FDB_WC, ?FDB_WC})),
     %% Clear 'data'
-    ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {<<"dd">>, ?FDB_WC})),
+    ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {?DATA_PREFIX, ?FDB_WC})),
     %% Clear any other potential table-specific data
     ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {?FDB_WC, ?FDB_WC, ?FDB_WC})),
     ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {?FDB_WC, ?FDB_WC})),
@@ -576,9 +652,50 @@ clear_index_(Db, TblPfx, #idx{data_key = IdxDataKey, count_key = IdxCountKey}) -
     IdxCountEnd = mfdb_lib:encode_key(TblPfx, {IdxCountKey, ?FDB_END}),
     ok = erlfdb:clear_range(Db, IdxCountStart, IdxCountEnd).
 
+clear_ttls_(Db, TblPfx) ->
+    ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC})),
+    ok = erlfdb:clear_range_startswith(Db, mfdb_lib:encode_prefix(TblPfx, {?KEY_TO_TTL_PFX, ?FDB_WC})).
+
 validate_reply_({notify, T}) when T =:= info orelse T =:= cast orelse T =:= call ->
     true;
 validate_reply_({callback, Mod, Fun}) when is_atom(Mod) andalso is_atom(Fun) ->
     erlang:function_exported(Mod, Fun, 4);
 validate_reply_(_) ->
     false.
+
+unixtime() ->
+    datetime_to_unix(erlang:universaltime()).
+
+unixminute() ->
+    {D, {H, M, _S}} = erlang:universaltime(),
+    %% Ensure 'at least' a minute
+    datetime_to_unix({D, {H, M, 0}}) + 60.
+
+datetime_to_unix({Mega, Secs, _}) ->
+    (Mega * 1000000) + Secs;
+datetime_to_unix({{Y,Mo,D},{H,Mi,S}}) ->
+    calendar:datetime_to_gregorian_seconds(
+      {{Y,Mo,D},{H,Mi,round(S)}}) - ?SECONDS_TO_EPOCH.
+
+sort(_RecName, [] = L) ->
+    L;
+sort(RecName, [T | _] = L) when is_tuple(T) andalso element(1, T) =:= RecName ->
+    lists:keysort(2, L);
+sort(_RecName, L) ->
+    lists:sort(L).
+
+-spec expired(undefined | ttl()) -> never | integer().
+expired(undefined) ->
+    never; %% never expires
+expired({minutes, X}) ->
+    Exp = X * 60,
+    {D, {H, M, _S}} = erlang:universaltime(),
+    datetime_to_unix({D, {H, M, 0}}) - Exp;
+expired({hours, X}) ->
+    Exp = X * 60 * 60,
+    {D, {H, M, _S}} = erlang:universaltime(),
+    datetime_to_unix({D, {H, M, 0}}) - Exp;
+expired({days, X}) ->
+    Exp = X * 60 * 60 * 24,
+    {D, {H, M, _S}} = erlang:universaltime(),
+    datetime_to_unix({D, {H, M, 0}}) - Exp.

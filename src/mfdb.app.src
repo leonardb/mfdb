@@ -13,7 +13,6 @@
     crypto,
     public_key,
     ssl,
-    lager,
     erlfdb,
     gproc]},
   {licenses, ["Apache 2.0"]},

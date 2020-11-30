@@ -30,9 +30,17 @@
 -define(FDB_WC, '_').
 -define(FDB_END, <<"~">>).
 -define(DATA_PREFIX, <<"dd">>).
+-define(DATA_PART_PREFIX, <<"pt">>).
+-define(DATA_REF_PREFIX, <<"mfdb_ref">>).
 -define(IDX_DATA_PREFIX, <<"id">>).
 -define(IDX_COUNT_PREFIX, <<"ic">>).
 -define(COUNTER_PREFIX, <<"cc">>).
+-define(TABLE_COUNT_PREFIX, <<"tc">>).
+-define(TABLE_SIZE_PREFIX, <<"ts">>).
+
+-define(TTL_TO_KEY_PFX, <<"ttl-t2k">>).
+-define(KEY_TO_TTL_PFX, <<"ttl-k2t">>).
+
 -define(IS_DB, {erlfdb_database, _}).
 -define(IS_TX, {erlfdb_transaction, _}).
 -define(IS_FUTURE, {erlfdb_future, _, _}).
@@ -40,16 +48,20 @@
 -define(IS_SS, {erlfdb_snapshot, _}).
 -define(IS_ITERATOR, {cont, #iter_st{}}).
 -define(GET_TX(SS), element(2, SS)).
--define(SORT(L), lists:keysort(2, L)).
+-define(SORT(RecName, L), mfdb_lib:sort(RecName, L)).
 
 -type db() :: {erlfdb_database, reference()}.
 -type tx() :: {erlfdb_transaction, reference()}.
 -type selector() :: {binary(), gteq | gt | lteq | lt} | {binary(), gteq | gt | lteq | lt, any()}.
 -type idx() :: {atom(), index, {pos_integer(), atom()}}.
 
+-type info_opt() :: all | size | count.
+
 -define(FIELD_TYPES, [binary, integer, float, list, tuple, date, datetime, time, inet, inet4, inet6, atom, any, term, undefined, null]).
 
 -define(TABPROC(Table), {via, gproc, {n, l, {mfdb, Table}}}).
+
+-type ttl()         :: {minutes | hours | days, pos_integer()}.
 -type table_name()  :: atom().
 -type field_name()  :: atom().
 -type field_type()  :: binary | integer | float | list | tuple | date | datetime | time | inet | inet4 | inet6 | atom | any | term | undefined | null.
@@ -58,7 +70,10 @@
 -type index()       :: pos_integer().
 -type indexes()     :: [] | list(index()).
 -type mfdbrecord()  :: {atom(), fields()}.
--type continuation() :: fun(() -> {[any()], continuation()} | '$end_of_table').
+-type continuation() :: function().
+
+-type option() :: {record, mfdbrecord()} | {indexes, indexes()} | {ttl, ttl()}.
+-type options() :: list(option()).
 
 -type watcher_callback() :: {callback, atom(), atom()}.
 -type watcher_notify() :: {notify, info | cast | call}.
@@ -95,8 +110,8 @@
          table_id                       :: binary(),
          pfx                            :: binary(), %% <<(bit_size(KeyId) + bit_size(TableId) + 16):8, (bit_size(KeyId)):8, KeyId/binary, (bit_size(TableId)):8, TableId/binary>>,
          hca_ref,   %% opaque :: #erlfdb_hca{} record used for mfdb_part() keys    :: erlfdb_hca:create(<<"parts_", TableId/binary>>).
-         info                   = [],
-         validator                      :: undefined | fun((any()) -> ok | {error, any()})
+         info           = [],
+         ttl            = undefined     :: undefined | ttl()
         }).
 
 -record(info, {k, v}).
@@ -110,7 +125,6 @@
          data_limit = 0 :: non_neg_integer(),
          data_acc = [],
          data_fun :: undefined | function(),
-         acc_keys = false :: boolean(),
          keys_only = false :: boolean(),
          compiled_ms :: undefined | ets:comp_match_spec(),
          start_key :: any(),

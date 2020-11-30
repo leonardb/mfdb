@@ -17,7 +17,6 @@
 init() ->
     case application:get_all_env(mfdb) of
         [] ->
-            lager:info("Not starting MFDB as no environment exists"),
             ok;
         Settings ->
             %% Crash if missing app_key or cluster

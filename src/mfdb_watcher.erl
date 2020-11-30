@@ -33,78 +33,78 @@
 -type notify_process() :: {notify, call | cast | info}.
 -type notify() :: notify_process() | notify_callback().
 
--record(watcher_state, {db, prefix :: binary(), table :: binary(), key :: binary(), mon, notifies = [], orig}).
+-record(watcher_state, {db, pfx :: binary(), table :: binary(), key :: binary(), mon, notifies = [], orig}).
 
 -spec subscribe(ReplyType :: notify(), FromPidRef :: {pid(), reference()}, Prefix :: binary(), Key :: binary()) -> ok | {error, function_not_exported}.
-subscribe(ReplyType, FromPidRef, Prefix, Key) ->
-    gen_server:call(?VIA(mfdb_lib:encode_key(Prefix, Key)), {subscribe, ReplyType, FromPidRef}).
+subscribe(ReplyType, FromPidRef, TblPfx, Key) ->
+    K = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, Key}),
+    gen_server:call(?VIA(K), {subscribe, ReplyType, FromPidRef}).
 
 -spec unsubscribe(pid(), binary(), binary()) -> ok.
-unsubscribe(Pid, Prefix, Key) ->
-    gen_server:call(?VIA(mfdb_lib:encode_key(Prefix, Key)), {unsubscribe, Pid}).
+unsubscribe(Pid, TblPfx, Key) ->
+    K = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, Key}),
+    gen_server:call(?VIA(K), {unsubscribe, Pid}).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
-start_link(Table, Prefix, Key) ->
-    lager:info("starting: ~p", [?VIA(mfdb_lib:encode_key(Prefix, Key))]),
-    gen_server:start_link(?VIA(mfdb_lib:encode_key(Prefix, Key)), ?MODULE, [Table, Prefix, Key], []).
+start_link(Table, TblPfx, Key) ->
+    K = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, Key}),
+    gen_server:start_link(?VIA(K), ?MODULE, [Table, TblPfx, Key], []).
 
-init([Table, Prefix, Key]) ->
+init([Table, TblPfx, Key]) ->
     process_flag(trap_exit, true),
-    [#conn{} = Conn] = ets:lookup(?MODULE, conn),
+    [#conn{} = Conn] = ets:lookup(mfdb_manager, conn),
     Db = mfdb_conn:connection(Conn),
-    EncKey = mfdb_lib:encode_key(Prefix, Key),
+    EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, Key}),
     OVal = case erlfdb:get(Db, EncKey) of
                not_found -> undefined;
-               EncVal -> mfdb_lib:decode_val(Db, Prefix, EncVal)
+               EncVal -> mfdb_lib:decode_val(Db, TblPfx, EncVal)
            end,
-    Mon = spawn_watcher(Db, Prefix, Key),
-    {ok, #watcher_state{db = Db, table = Table, prefix = Prefix,
+    Mon = spawn_watcher(Db, TblPfx, Key),
+    {ok, #watcher_state{db = Db, table = Table, pfx = TblPfx,
                         key = Key, notifies = [],
                         mon = Mon, orig = OVal}}.
 
 handle_call({subscribe, {notify, NotifyType}, {Pid, _Ref}}, _From,
-            #watcher_state{key = Key, notifies = Notifies0} = State) ->
-    lager:info("Subscribing ~p to monitor on key ~p", [Pid, Key]),
-    Notifies = case lists:keytake(Pid, 2, Notifies0) of
+            #watcher_state{notifies = Notifies0} = State) ->
+    Notifies = case lists:keytake(Pid, 3, Notifies0) of
                    false ->
                        %% Monitor the new subscriber
                        Ref = monitor(process, Pid),
                        lists:usort([{notify, NotifyType, Pid, Ref} | Notifies0]);
-                   {value, {_OMethod, Pid, ORef}, Notifies1} ->
+                   {value, {notify, _OMethod, Pid, ORef}, Notifies1} ->
                        %% Replace the notification method for a pre-existing subscription
                        demonitor(ORef),
                        Ref = monitor(process, Pid),
                        lists:usort([{notify, NotifyType, Pid, Ref} | Notifies1])
                end,
     {reply, ok, State#watcher_state{notifies = Notifies}};
-handle_call({subscribe, {callback, Module, Function}, {Pid, _Ref}}, _From,
-            #watcher_state{key = Key, notifies = Notifies0} = State) ->
+handle_call({subscribe, {callback, Module, Function}, _PidRef}, _From,
+            #watcher_state{notifies = Notifies0} = State) ->
     %% Callback must be an exported 4-arity function
     case erlang:function_exported(Module, Function, 4) of
         true ->
-            lager:info("Adding Callback for ~p with monitor on key ~p", [Pid, Key]),
             Notifies = lists:usort([{callback, Module, Function} | Notifies0]),
             {reply, ok, State#watcher_state{notifies = Notifies}};
         false ->
             {reply, {error, function_not_exported}, State}
     end;
 handle_call({unsubscribe, {Pid, _Ref}}, _From,
-            #watcher_state{key = Key, notifies = Notifies0} = State) ->
-    lager:info("Unsubscribing ~p from monitor on key ~p", [Pid, Key]),
-    Notifies = case lists:keytake(Pid, 2, Notifies0) of
-                   false ->
-                       Notifies0;
-                   {value, {_, Pid, Ref}, Notifies1} ->
-                       demonitor(Ref),
-                       Notifies1
-               end,
-    {reply, ok, State#watcher_state{notifies = Notifies}};
+            #watcher_state{mon = {WatcherPid, WatcherRef}, notifies = Notifies0} = State) ->
+    case remove_notify(Pid, Notifies0) of
+        [] ->
+            %% Nothing is waiting to be notified,
+            %% so stop watching
+            demonitor(WatcherRef),
+            exit(WatcherPid, kill),
+            {stop, normal, ok, State#watcher_state{notifies = []}};
+        Notifies ->
+            {reply, ok, State#watcher_state{notifies = Notifies}}
+    end;
 handle_call(stop, _From,
-            #watcher_state{key = Key, mon = {Pid, Ref}, notifies = Notifies} = State) ->
-    lager:info("Stopping monitor on key ~p", [Key]),
+            #watcher_state{mon = {Pid, Ref}, notifies = Notifies} = State) ->
     [demonitor(NRef) || {notify, _, _Pid, NRef} <- Notifies],
     demonitor(Ref),
     exit(Pid, kill),
@@ -112,10 +112,11 @@ handle_call(stop, _From,
 handle_call(_Request, _From, #watcher_state{} = State) ->
     {reply, ok, State}.
 
-handle_cast(updated, #watcher_state{db = Db, table = Table,
-                                    prefix = Prefix, key = Key,
+handle_cast(updated, #watcher_state{db = Db, table = Tab0,
+                                    pfx = Prefix, key = Key,
                                     notifies = Watchers, orig = Orig} = State) ->
-    EncKey = mfdb_lib:encode_key(Prefix, Key),
+    EncKey = mfdb_lib:encode_key(Prefix, {?DATA_PREFIX, Key}),
+    Table = binary_to_existing_atom(Tab0),
     NState = case erlfdb:get(Db, EncKey) of
                  not_found ->
                      %% Key was touched and no longer exists
@@ -138,69 +139,72 @@ handle_cast(updated, #watcher_state{db = Db, table = Table,
              end,
     {noreply, NState};
 handle_cast(_Request, #watcher_state{} = State) ->
-    lager:error("Unknown cast ~p", [_Request]),
     {noreply, State}.
 
-handle_info({'DOWN', Ref, process, Pid, Resp},
-            #watcher_state{db = Db, prefix = Prefix, key = Key, mon = {Pid, Ref}} = State) ->
-    lager:warning("Watcher for ~p went down: ~p", [Key, Resp]),
-    demonitor(Ref),
-    lager:info("Starting watcher for ~p ~p", [Db, mfdb_lib:encode_key(Prefix, Key)]),
-    Mon = spawn_watcher(Db, Prefix, Key),
-    {noreply, State#watcher_state{mon = Mon}};
-handle_info({'EXIT', Pid, Msg},
-            #watcher_state{db = Db, prefix = Prefix, key = Key, mon = {Pid, Ref}} = State) ->
-    lager:error("Watcher for ~p Died: ~p / ~p", [Key, Msg]),
+handle_info({'DOWN', Ref, process, Pid, _Resp}, #watcher_state{db = Db, pfx = Prefix,
+                                                               key = Key, mon = {Pid, Ref}
+                                                              } = State) ->
     demonitor(Ref),
     Mon = spawn_watcher(Db, Prefix, Key),
     {noreply, State#watcher_state{mon = Mon}};
-handle_info({'EXIT', Pid, _Msg}, #watcher_state{notifies = Notify0} = State) ->
-    %% Subscriber died so demonitor
-    Notify = case lists:keytake(Pid, 2, Notify0) of
-                 false ->
-                     Notify0;
-                 {value, {_, Pid, Ref}, Notify1} ->
-                     demonitor(Ref),
-                     Notify1
-             end,
-    {noreply, State#watcher_state{notifies = Notify}};
-handle_info({'DOWN', _Ref, process, Pid, _Resp}, #watcher_state{notifies = Notify0} = State) ->
-    %% Subscriber died so demonitor
-    Notify = case lists:keytake(Pid, 2, Notify0) of
-                 false ->
-                     Notify0;
-                 {value, {_, Pid, Ref}, Notify1} ->
-                     demonitor(Ref),
-                     Notify1
-             end,
-    {noreply, State#watcher_state{notifies = Notify}};
+handle_info({'EXIT', Pid, _Msg}, #watcher_state{db = Db, pfx = Prefix,
+                                                key = Key, mon = {Pid, Ref}
+                                               } = State) ->
+    demonitor(Ref),
+    Mon = spawn_watcher(Db, Prefix, Key),
+    {noreply, State#watcher_state{mon = Mon}};
+handle_info({'EXIT', Pid, _Msg}, #watcher_state{notifies = Notifies0} = State) ->
+    %% Subscriber died so demonitor and maybe shut down watcher
+    Notifies = remove_notify(Pid, Notifies0),
+    maybe_stop(Notifies, State);
+handle_info({'DOWN', _Ref, process, Pid, _Resp}, #watcher_state{notifies = Notifies0} = State) ->
+    %% Subscriber died so demonitor and maybe shut down watcher
+    Notifies = remove_notify(Pid, Notifies0),
+    maybe_stop(Notifies, State);
 handle_info(_Info, #watcher_state{} = State) ->
     {noreply, State}.
 
 terminate(_Reason, #watcher_state{mon = {_Pid, Ref}} = _State) ->
     demonitor(Ref),
-    lager:info("Terminating: ~p", [_Reason]),
     ok.
 
 code_change(_OldVsn, #watcher_state{} = State, _Extra) ->
     {ok, State}.
 
+maybe_stop([], #watcher_state{mon = {WatcherPid, WatcherRef}} = State) ->
+    %% Nothing is waiting to be notified,
+    %% so stop watching
+    demonitor(WatcherRef),
+    exit(WatcherPid, kill),
+    {stop, normal, State#watcher_state{notifies = []}};
+maybe_stop(Notifies, State) ->
+    {noreply, State#watcher_state{notifies = Notifies}}.
+
+remove_notify(Pid, Notify0) ->
+    case lists:keytake(Pid, 3, Notify0) of
+        false ->
+            Notify0;
+        {value, {notify, _, Pid, Ref}, Notify1} ->
+            demonitor(Ref),
+            Notify1
+    end.
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 spawn_watcher(Db, Prefix, Key) ->
-    lager:info("Spawning watcher for ~p ~p on db ~p", [Key, Prefix, Db]),
     spawn_monitor(fun() -> watcher_(Db, Prefix, Key) end).
 
 %% @doc once a watcher receives a message it must re-watch the key
 watcher_(Db, Prefix, Key) ->
-    WatchKey = mfdb_lib:encode_key(Prefix, Key),
+    WatchKey = mfdb_lib:encode_key(Prefix, {?DATA_PREFIX, Key}),
     Future = erlfdb:watch(Db, WatchKey),
     case erlfdb:wait(Future, [{timeout, infinity}]) of
         ok ->
             gen_server:cast(?VIA(WatchKey), updated),
             watcher_(Db, Prefix, Key);
         Err ->
+            error_logger:error_msg("Watcher FDB error: ~p", [Err]),
             exit({error, Err})
     end.
 
@@ -214,34 +218,34 @@ notify_([{callback, Mod, Fun} | Rest], Val) ->
             {T, K, A, V} ->
                 {T, K, A, V}
         end,
-    try Mod:Fun(Table, Key, Action, Value)
+    try Mod:Fun(binary_to_existing_atom(Table), Key, Action, Value)
     catch
         E:M:St ->
-            lager:error("Callback to ~p:~p/4 failed: ~p",
-                        [Mod, Fun, {E,M, St}])
+            error_logger:error_msg("Callback to ~p:~p/4 failed: ~p",
+                                   [Mod, Fun, {E,M, St}])
     end,
     notify_(Rest, Val);
 notify_([{notify, call, Pid, _Ref} | Rest], Val) ->
     try gen_server:call(Pid, Val)
     catch
         E:M:St ->
-            lager:error("call to Pid ~p failed: ~p",
-                        [Pid, {E,M, St}])
+            error_logger:error_msg("call to Pid ~p failed: ~p",
+                                   [Pid, {E,M, St}])
     end,
     notify_(Rest, Val);
 notify_([{notify, cast, Pid, _Ref} | Rest], Val) ->
     try gen_server:cast(Pid, Val)
     catch
         E:M:St ->
-            lager:error("cast to Pid ~p failed: ~p",
-                        [Pid, {E,M, St}])
+            error_logger:error_msg("cast to Pid ~p failed: ~p",
+                                   [Pid, {E,M, St}])
     end,
     notify_(Rest, Val);
 notify_([{notify, info, Pid, _Ref} | Rest], Val) ->
     try Pid ! Val
     catch
         E:M:St ->
-            lager:error("notify to Pid ~p failed: ~p",
-                        [Pid, {E,M, St}])
+            error_logger:error_msg("notify to Pid ~p failed: ~p",
+                                   [Pid, {E,M, St}])
     end,
     notify_(Rest, Val).

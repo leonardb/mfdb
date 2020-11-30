@@ -99,8 +99,11 @@ handle_call({connect, Tab}, _From, S) ->
 handle_call({delete_table, Tab0}, _From, S) ->
     R = delete_table_(atom_to_binary(Tab0)),
     {reply, R, S};
-handle_call({create_table, Table, Record, Indexes}, _From, S) ->
-    R = create_table_(atom_to_binary(Table), Record, Indexes),
+handle_call({create_table, Table, Options}, _From, S) ->
+    {record, Record} = lists:keyfind(record, 1, Options),
+    {ok, Indexes} = indexes_(Options),
+    {ok, Ttl} = ttl_(Options),
+    R = create_table_(atom_to_binary(Table), Record, Indexes, Ttl),
     {reply, R, S};
 handle_call(_, _, S) ->
     {reply, error, S}.
@@ -116,6 +119,28 @@ terminate(_, _) ->
 
 code_change(_, S, _) ->
     {ok, S}.
+
+indexes_(Options) ->
+    case lists:keyfind(indexes, 1, Options) of
+        false ->
+            {ok, []};
+        {indexes, Indexes0} ->
+            {ok, Indexes0}
+    end.
+
+ttl_(Options) ->
+    case lists:keyfind(ttl, 1, Options) of
+        false ->
+            {ok, undefined};
+        {ttl, {minutes, _} = Ttl0} ->
+            {ok, Ttl0};
+        {ttl, {hours, _} = Ttl0} ->
+            {ok, Ttl0};
+        {ttl, {days, _} = Ttl0} ->
+            {ok, Ttl0};
+        _ ->
+            {error, invalid_ttl}
+    end.
 
 delete_table_(Tab) ->
     case ets:lookup(?MODULE, Tab) of [#st{db = Db, key_id = KeyId, index = Indexes, pfx = TblPfx}] ->
@@ -142,8 +167,7 @@ load_table_(Tab) ->
                     {error, no_such_table};
                 EncSt ->
                     #st{} = TableSt = binary_to_term(EncSt),
-                    ValidatorFun = mfdb_lib:types_validation_fun(TableSt),
-                    true = ets:insert(?MODULE, TableSt#st{db = Db, validator = ValidatorFun}),
+                    true = ets:insert(?MODULE, TableSt#st{db = Db}),
                     ok = mfdb_table_sup:add(binary_to_atom(Tab))
             end;
         [#st{}] ->
@@ -151,26 +175,26 @@ load_table_(Tab) ->
             ok
     end.
 
-create_table_(Tab, Record, Indexes) when is_binary(Tab) ->
+create_table_(Tab, Record, Indexes, Ttl) when is_binary(Tab) ->
     [#conn{key_id = KeyId} = Conn] = ets:lookup(?MODULE, conn),
     Db = mfdb_conn:connection(Conn),
     %% Functions must return 'ok' to continue, anything else will exit early
     Flow = [{fun mfdb_lib:validate_record/1, [Record]},
             {fun mfdb_lib:validate_indexes/2, [Indexes, Record]},
-            {fun table_create_if_not_exists_/5, [Db, KeyId, Tab, Record, Indexes]}],
+            {fun table_create_if_not_exists_/6, [Db, KeyId, Tab, Record, Indexes, Ttl]}],
     mfdb_lib:flow(Flow, ok).
 
 table_exists_(Db, TabKey) ->
     %% Does a table config exist
     erlfdb:get(Db, TabKey) =/= not_found.
 
-table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes) ->
+table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl) ->
     TabKey = sext:encode({KeyId, <<"table">>, Table}),
     TableSt = case table_exists_(Db, TabKey) of
                   false ->
                       Hca = erlfdb_hca:create(<<"hca_table">>),
                       TableId = erlfdb_hca:allocate(Hca, Db),
-                      #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes),
+                      #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes, Ttl),
                       ok = erlfdb:set(Db, TabKey, term_to_binary(TableSt0)),
                       TableSt0;
                   true ->
@@ -178,11 +202,10 @@ table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes) ->
                       StBin = erlfdb:get(Db, TabKey),
                       binary_to_term(StBin)
               end,
-    ValidatorFun = mfdb_lib:types_validation_fun(TableSt),
-    true = ets:insert(?MODULE, TableSt#st{db = Db, validator = ValidatorFun}),
+    true = ets:insert(?MODULE, TableSt#st{db = Db}),
     ok = mfdb_table_sup:add(binary_to_atom(Table)).
 
-mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes) ->
+mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl) ->
     HcaRef = erlfdb_hca:create(<<TableId/binary, "_hca_ref">>),
     Pfx = <<(byte_size(KeyId) + byte_size(TableId) + 2),
             (byte_size(KeyId)), KeyId/binary,
@@ -197,7 +220,8 @@ mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes) ->
              table_id    = TableId,
              hca_ref     = HcaRef,
              pfx         = Pfx,
-             info        = []
+             info        = [],
+             ttl         = Ttl
             },
     %% Convert indexes to records and add to the table state
     create_indexes_(Indexes, St0).

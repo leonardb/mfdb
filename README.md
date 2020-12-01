@@ -11,6 +11,8 @@ It supports:
 - table size (bytes) `mfdb:table_info(Tab, size)`
 - table count `mfdb:table_info(Tab, count)`
 
+**WARNING** Unlike mnesia, keypos cannot be specified and the key is always the first field of the record.
+
 # Table creation options
 
 - record :: {RecordName :: atom, Fields :: list(atom() | {atom(), atom()})}.

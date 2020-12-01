@@ -11,6 +11,10 @@
 %%% WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 %%% License for the specific language governing permissions and limitations under
 %%% the License.
+%%%
+%%% A bunch of this code was derived from mnesia_rocksdb
+%%% https://github.com/aeternity/mnesia_rocksdb
+%%% and where applicable copyright remains with them
 
 -module(mfdb).
 
@@ -84,7 +88,7 @@ delete_table(Table) when is_atom(Table) ->
 clear_table(Table) when is_atom(Table) ->
     gen_server:call(?TABPROC(Table), clear_table, infinity).
 
-%% @doc import all records from `SourceFile` into a table.
+%% @doc import all records from SourceFile into a table.
 -spec import(Table :: table_name(), SourceFile :: list()) -> ok.
 import(Table, SourceFile) when is_atom(Table) ->
     gen_server:call(?TABPROC(Table), {import, SourceFile}, infinity).
@@ -99,10 +103,10 @@ table_info(Table, InfoOpt)
     gen_server:call(?TABPROC(Table), {table_info, InfoOpt}).
 
 %% @doc
-%% A mnesia-style select returning a `continuation()`.
+%% A mnesia-style select returning a continuation()
 %% Returns are chunked into buckets of 50 results
 %% @end
--spec select(Table :: table_name(), Matchspec :: any()) ->  {[] | list(any()), continuation() | '$end_of_table'}.
+-spec select(Table :: table_name(), Matchspec :: ets:match_spec()) ->  {[] | list(any()), continuation() | '$end_of_table'}.
 select(Table, Matchspec) when is_atom(Table) ->
     select_(Table, Matchspec, 50).
 
@@ -120,6 +124,7 @@ select(Cont) ->
             Cont()
     end.
 
+%% @private
 do_select_(Table, Matchspec, Limit) when is_atom(Table) ->
     select_(Table, Matchspec, Limit).
 
@@ -181,9 +186,7 @@ insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
             {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
     mfdb_lib:flow(Flow, true).
 
-%% @doc Atomic counter update. IMPORTANT: ONLY POSITIVE INTEGER
-%% when result would be < 0, counter is maintained at ZERO
-%% @end
+%% @doc Atomic counter update
 -spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> non_neg_integer().
 update_counter(Table, Key, Increment) when is_atom(Table) andalso is_integer(Increment) ->
     #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
@@ -196,7 +199,7 @@ fold(Table, InnerFun, OuterAcc) ->
     fold_cont_(select(Table, MatchSpec), InnerFun, OuterAcc).
 
 %% @doc Applies a function to all records in the table matching the MatchSpec
--spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: any()) ->  any().
+-spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) ->  any().
 fold(Table, InnerFun, OuterAcc, MatchSpec) ->
     fold_cont_(select(Table, MatchSpec), InnerFun, OuterAcc).
 
@@ -233,9 +236,11 @@ unsubscribe(Table, Key) when is_atom(Table) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
+%% @private
 start_link(Table) ->
     gen_server:start_link(?TABPROC(Table), ?MODULE, [Table], []).
 
+%% @private
 init([Table]) ->
     %% Only start a reaper poller if table has TTL
     #st{ttl = Ttl} = mfdb_manager:st(Table),
@@ -247,6 +252,7 @@ init([Table]) ->
              end,
     {ok, #{table => Table, poller => Poller}}.
 
+%% @private
 handle_call(clear_table, _From, #{table := Table} = State) ->
     %% potentially long-running operation. Caller waits 'infinity'
     #st{db = Db, pfx = TblPfx, index = Indexes} = mfdb_manager:st(Table),
@@ -292,9 +298,11 @@ handle_call(stop, _From, State) ->
 handle_call(_, _, State) ->
     {reply, error, State}.
 
+%% @private
 handle_cast(_, State) ->
     {noreply, State}.
 
+%% @private
 handle_info(poll, #{table := Table, poller := Poller} = State) ->
     %% Non-blocking reaping of expired records from table
     case maps:get(reaper, State, undefined) of
@@ -340,18 +348,22 @@ handle_info({'DOWN', Ref, process, _Pid0, _Reason}, #{poller := Poller} = State)
 handle_info(_UNKNOWN, State) ->
     {noreply, State}.
 
+%% @private
 terminate(_, _) ->
     ok.
 
+%% @private
 code_change(_, State, _) ->
     {ok, State}.
 
+%% @private
 poll_timer(undefined) ->
     erlang:send_after(?REAP_POLL_INTERVAL, self(), poll);
 poll_timer(TRef) when is_reference(TRef) ->
     erlang:cancel_timer(TRef),
     erlang:send_after(?REAP_POLL_INTERVAL, self(), poll).
 
+%% @private
 key_subscribe_(Table, ReplyType, From, TblPfx, Key) ->
     try mfdb_watcher:subscribe(ReplyType, From, TblPfx, Key)
     catch
@@ -363,6 +375,7 @@ key_subscribe_(Table, ReplyType, From, TblPfx, Key) ->
             {error, {E,M}}
     end.
 
+%% @private
 key_unsubscribe_(From, Prefix, Key) ->
     try mfdb_watcher:unsubscribe(From, Prefix, Key)
     catch
@@ -372,6 +385,7 @@ key_unsubscribe_(From, Prefix, Key) ->
             {error, {E,M}}
     end.
 
+%% @private
 reap_expired_(Table) ->
     #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
     case mfdb_lib:expired(Ttl) of
@@ -384,6 +398,7 @@ reap_expired_(Table) ->
             reap_expired_(St, RangeStart, RangeEnd)
     end.
 
+%% @private
 reap_expired_(#st{db = Db, pfx = TabPfx} = St, RangeStart, RangeEnd) ->
     Tx = erlfdb:create_transaction(Db),
     try erlfdb:wait(erlfdb:get_range(Tx, RangeStart, erlfdb_key:strinc(RangeEnd), [{limit, 1000}])) of
@@ -415,6 +430,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx} = St, RangeStart, RangeEnd) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%% INTERNAL %%%%%%%%%%%%%%%%%%%%%%%
 
+%% @private
 select_(Table, Matchspec0, Limit) when is_atom(Table) ->
     #st{db = Db, pfx = TabPfx, index = Indexes0} = St = mfdb_manager:st(Table),
     {Guards, Binds, Ms} =
@@ -438,6 +454,7 @@ select_(Table, Matchspec0, Limit) when is_atom(Table) ->
             do_select(Db, TabPfx, Ms, PkStart, PkEnd, Limit)
     end.
 
+%% @private
 fold_cont_({[], '$end_of_table'}, _InnerFun, OuterAcc) ->
     OuterAcc;
 fold_cont_({Data, '$end_of_table'}, InnerFun, OuterAcc) ->
@@ -446,6 +463,7 @@ fold_cont_({Data, Cont}, InnerFun, OuterAcc) when is_function(Cont) ->
     NewAcc = lists:foldl(InnerFun, OuterAcc, Data),
     fold_cont_(Cont(), InnerFun, NewAcc).
 
+%% @private
 is_wild('_') ->
     true;
 is_wild(A) when is_atom(A) ->
@@ -463,6 +481,7 @@ is_wild(A) when is_atom(A) ->
             false
     end.
 
+%% @private
 bound_in_headpat(HP) when is_atom(HP) ->
     {all, HP};
 bound_in_headpat(HP) when is_tuple(HP) ->
@@ -472,6 +491,7 @@ bound_in_headpat(_) ->
     %% this is not the place to throw an exception
     none.
 
+%% @private
 map_vars([H|T], P) ->
     case extract_vars(H) of
         [] ->
@@ -482,6 +502,7 @@ map_vars([H|T], P) ->
 map_vars([], _) ->
     [].
 
+%% @private
 ms_rewrite(HP, Guards) when is_atom(HP) ->
     {HP, Guards};
 ms_rewrite(HP, Guards) when is_tuple(HP) ->
@@ -503,6 +524,7 @@ ms_rewrite(HP, Guards) when is_tuple(HP) ->
           {2, [], []}, T),
     headpat_matches_to_guards(HP, Guards, Used, Matches).
 
+%% @private
 headpat_matches_to_guards(HP, Guards, _Used, []) ->
     {HP, Guards};
 headpat_matches_to_guards(HP, Guards, Used0, [{Idx, Val} | Rest]) ->
@@ -511,6 +533,7 @@ headpat_matches_to_guards(HP, Guards, Used0, [{Idx, Val} | Rest]) ->
     NewGuards = [{'=:=', Bind, Val} | Guards],
     headpat_matches_to_guards(NewHP, NewGuards, Used, Rest).
 
+%% @private
 next_bind(Used, X) ->
     Bind = list_to_atom("\$" ++ integer_to_list(X)),
     case lists:member(Bind, Used) of
@@ -520,6 +543,7 @@ next_bind(Used, X) ->
             {[Bind | Used], Bind}
     end.
 
+%% @private
 -spec range_guards(list({atom(), atom(), any()}), list(), list(), list()) -> list().
 range_guards([], _Binds, _Indexes, Acc) ->
     lists:keysort(1, Acc);
@@ -546,9 +570,11 @@ range_guards([{Comp, Bind, Val} | Rest], Binds, Indexes, Acc) ->
     end.
 
 
+%% @private
 primary_table_range_(Guards) ->
     primary_table_range_(Guards, undefined, undefined).
 
+%% @private
 primary_table_range_([], Start, End) ->
     {replace_(Start, ?FDB_WC), replace_(End, ?FDB_END)};
 primary_table_range_([{2, '>=', V} | Rest], undefined, End) ->
@@ -562,11 +588,13 @@ primary_table_range_([{2, '<', V} | Rest], Start, undefined) ->
 primary_table_range_([_ | Rest], Start, End) ->
     primary_table_range_(Rest, Start, End).
 
+%% @private
 replace_(undefined, Val) ->
     Val;
 replace_(Orig, _Val) ->
     Orig.
 
+%% @private
 idx_sel(Guards, Indexes, #st{pfx = TabPfx} = St0) ->
     IdxSel0 = [begin
                    #idx{pos = KeyPos, data_key = IdxDataPfx} = Idx,
@@ -595,9 +623,11 @@ idx_sel(Guards, Indexes, #st{pfx = TabPfx} = St0) ->
             end
     end.
 
+%% @private
 idx_pick(Idx) ->
     idx_pick(Idx, undefined).
 
+%% @private
 idx_pick([], Res) ->
     Res;
 idx_pick([First | Rest], undefined) ->
@@ -646,6 +676,7 @@ idx_pick([{IdxVal0, _, _, undefined} | Rest], {IdxVal1, _, _, undefined} = Idx)
 %% This is very basic/naive implementation
 %% @todo :: deal with multi-conditional guards with 'andalso', 'orelse' etc
 %% @end
+%% @private
 idx_table_params_(Guards, Keypos, TblPfx, IdxDataPfx) ->
     case lists:keyfind(Keypos, 1, Guards) of
         false ->
@@ -654,6 +685,7 @@ idx_table_params_(Guards, Keypos, TblPfx, IdxDataPfx) ->
             idx_table_params_(Guards, Keypos, TblPfx, IdxDataPfx, undefined, undefined, {{'$1', '$2'}}, [])
     end.
 
+%% @private
 idx_table_params_([], _Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards) ->
     PfxStart = index_pfx(IdxDataPfx, start, ?FDB_WC, true),
     PfxEnd = index_pfx(IdxDataPfx, 'end', ?FDB_END, true),
@@ -685,6 +717,7 @@ idx_table_params_([{Keypos, Comp, Val} | Rest], Keypos, TblPfx, IdxDataPfx, Star
 idx_table_params_([_ | Rest], Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards) ->
     idx_table_params_(Rest, Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards).
 
+%% @private
 index_pfx(IdxDataPfx, start, V, true) ->
     Pfx = {IdxDataPfx, {V, ?FDB_WC}},
     Pfx;
@@ -692,6 +725,7 @@ index_pfx(IdxDataPfx, 'end', V, true) ->
     Pfx = {IdxDataPfx, {V, ?FDB_END}},
     Pfx.
 
+%% @private
 v_(undefined) -> 0;
 v_({fdb, B}) when is_binary(B) -> 1; %% pre-calculated range
 v_({fdbr, B}) when is_binary(B) -> 2; %% pre-calculated range
@@ -706,14 +740,17 @@ v_(L) when is_list(L) ->
     %% number of guards
     length(L) * 0.5.
 
+%% @private
 idx_val_(undefined) ->
     0;
 idx_val_({S,E,C,G}) ->
     lists:sum([v_(X) || X <- [S,E,C,G]]).
 
+%% @private
 wild_in_body(BodyVars) ->
     intersection(BodyVars, ['$$','$_']) =/= [].
 
+%% @private
 needs_key_only([{HP,_,Body}]) ->
     BodyVars = lists:flatmap(fun extract_vars/1, Body),
     %% Note that we express the conditions for "needs more than key" and negate.
@@ -728,11 +765,13 @@ needs_key_only(_) ->
     %% don't know
     false.
 
+%% @private
 any_in_body(Vars, BodyVars) ->
     lists:any(fun({_,Vs}) ->
                       intersection(Vs, BodyVars) =/= []
               end, Vars).
 
+%% @private
 extract_vars([H|T]) ->
     extract_vars(H) ++ extract_vars(T);
 extract_vars(T) when is_tuple(T) ->
@@ -749,9 +788,11 @@ extract_vars(T) when is_atom(T) ->
 extract_vars(_) ->
     [].
 
+%% @private
 intersection(A,B) when is_list(A), is_list(B) ->
     A -- (A -- B).
 
+%% @private
 outer_match_fun_(TabPfx, OCompiledKeyMs) ->
     fun(Tx, Id, Acc0) ->
             K = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, Id}),
@@ -773,6 +814,7 @@ outer_match_fun_(TabPfx, OCompiledKeyMs) ->
             end
     end.
 
+%% @private
 index_match_fun_(ICompiledKeyMs, OuterMatchFun) ->
     fun(Tx, {{_, Id}} = R, IAcc) ->
             case ets:match_spec_run([R], ICompiledKeyMs) of
@@ -785,6 +827,7 @@ index_match_fun_(ICompiledKeyMs, OuterMatchFun) ->
             end
     end.
 
+%% @private
 pk_to_range(TabPfx, start, {gt, X}) ->
     {fdbr, erlfdb_key:strinc(mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}))};
 pk_to_range(TabPfx, start, {gte, X}) ->
@@ -798,6 +841,7 @@ pk_to_range(TabPfx, start, _) ->
 pk_to_range(TabPfx, 'end', _) ->
     {fdbr, erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_END}))}.
 
+%% @private
 do_select(Db, TabPfx, MS, PkStart, PkEnd, Limit) ->
     KeysOnly = needs_key_only(MS),
     Keypat = case (PkStart =/= undefined orelse PkEnd =/= undefined) of
@@ -814,6 +858,7 @@ do_select(Db, TabPfx, MS, PkStart, PkEnd, Limit) ->
     Iter = iter_(Db, TabPfx, Keypat, KeysOnly, CompiledMs, DataFun, InAcc, Limit),
     do_iter(Iter, Limit, []).
 
+%% @private
 do_indexed_select(Tab0, MS, {_IdxPos, {Start, End, Match, Guard}}, Limit) ->
     #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Tab0),
     KeyMs = [{Match, Guard, ['$_']}],
@@ -827,6 +872,7 @@ do_indexed_select(Tab0, MS, {_IdxPos, {Start, End, Match, Guard}}, Limit) ->
     Iter = iter_(Db, TabPfx, IRange, OKeysOnly, undefined, DataFun, OAcc, Limit),
     do_iter(Iter, Limit, []).
 
+%% @private
 do_iter('$end_of_table', Limit, Acc) when Limit =:= 0 ->
     {mfdb_lib:sort(Acc), '$end_of_table'};
 do_iter({Data, '$end_of_table'}, Limit, Acc) when Limit =:= 0 ->
@@ -851,6 +897,7 @@ do_iter({Data, Iter}, Limit, Acc) when Limit > 0 andalso is_function(Iter) ->
     NAcc = mfdb_lib:sort(lists:append(Acc, Data)),
     {NAcc, Iter}.
 
+%% @private
 -spec iter_(Db :: ?IS_DB, TabPfx :: binary(), StartKey :: any(), KeysOnly :: boolean(), Ms :: undefined | ets:comp_match_spec(), DataFun :: undefined | function(), InAcc :: list(), DataLimit :: pos_integer()) ->
                    {list(), '$end_of_table'} | {list(), ?IS_ITERATOR}.
 iter_(?IS_DB = Db, TabPfx, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) ->
@@ -877,6 +924,7 @@ iter_(?IS_DB = Db, TabPfx, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) -
     St = iter_transaction_(St0),
     iter_int_({cont, St}).
 
+%% @private
 iter_int_({cont, #iter_st{tx = Tx,
                           pfx = TabPfx,
                           keys_only = KeysOnly,
@@ -929,6 +977,7 @@ iter_int_({cont, #iter_st{tx = Tx,
             end
     end.
 
+%% @private
 iter_append_([], _Tx, _TabPfx, _KeysOnly, _Ms, _DataFun, AddCount, Acc) ->
     {Acc, AddCount};
 iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) ->
@@ -982,11 +1031,13 @@ iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) 
             end
     end.
 
+%% @private
 iter_val_(true, Key, _Rec) ->
     Key;
 iter_val_(false, _Key, Rec) ->
     Rec.
 
+%% @private
 iter_start_end_(TblPfx, StartKey0) ->
     case StartKey0 of
         {range, S0, E0} ->
@@ -1007,18 +1058,21 @@ iter_start_end_(TblPfx, StartKey0) ->
             {erlfdb_key:first_greater_than(StartKey0), erlfdb_key:strinc(StartKey0)}
     end.
 
+%% @private
 iter_transaction_(#iter_st{db = Db, tx = Tx} = St) ->
     iter_commit_(Tx),
     NTx = erlfdb:create_transaction(Db),
     erlfdb_nif:transaction_set_option(NTx, disallow_writes, 1),
     St#iter_st{tx = NTx}.
 
+%% @private
 iter_commit_(undefined) ->
     ok;
 iter_commit_(?IS_TX = Tx) ->
     catch erlfdb:wait(erlfdb:commit(Tx)),
     ok.
 
+%% @private
 iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
                       end_sel = EndKey, limit = Limit,
                       target_bytes = TargetBytes, streaming_mode = StreamingMode,
@@ -1044,11 +1098,13 @@ iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
             iter_future_(St)
     end.
 
+%% @private
 hit_data_limit_(_DataCount, 0) ->
     false;
 hit_data_limit_(DataCount, IterLimit) ->
     DataCount + 1 > IterLimit.
 
+%% @private
 rows_more_last_(0, _DataCount, RawRows, _Count, HasMore0) ->
     {LastKey0, _} = lists:last(RawRows),
     {RawRows, HasMore0, LastKey0};
@@ -1062,7 +1118,8 @@ rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
     {LastKey0, _} = lists:last(Rows0),
     {Rows0, NHasMore, LastKey0}.
 
-%% The do_import is based off of the file:consult/1 code which reads in terms from a file
+%% @doc The do_import is based off of the file:consult/1 code which reads in terms from a file
+%% @private
 do_import_(Table, SourceFile, ImportId) ->
     #st{record_name = RecName, fields = Fields, index = Index} = St = mfdb_manager:st(Table),
     IndexList = tl(tuple_to_list(Index)),
@@ -1110,6 +1167,7 @@ do_import_(Table, SourceFile, ImportId) ->
             exit({normal, {ImportId, Error}})
     end.
 
+%% @private
 consult_stream(Fd, Line, Fun, Acc) ->
     case io:read(Fd, '', Line) of
         {ok, Term, EndLine} ->
@@ -1120,6 +1178,7 @@ consult_stream(Fd, Line, Fun, Acc) ->
             Acc
     end.
 
+%% @private
 consult_stream(Fd, Fun, Acc) ->
     _ = epp:set_encoding(Fd),
     consult_stream(Fd, 1, Fun, Acc).

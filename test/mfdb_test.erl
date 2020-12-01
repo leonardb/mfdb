@@ -3,46 +3,63 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -record(test_a, {id :: integer(), value :: binary()}).
+-record(test, {id :: integer(), value :: binary()}).
 -define(TEST_A, {test_a, [{id, integer}, {value, binary}]}).
 -define(APP_KEY, <<"cb136a3d-de40-4a85-bd10-bb23f6f1ec2a">>).
 
-aaa_test() ->
-    {ok, ClusterFile} = init_test_cluster_int([]),
-    ?assert(is_binary(ClusterFile)),
-    application:ensure_all_started(mfdb),
-    ok.
+%% This sux, but it's the only way I can get around random timeout issues
+t_001_test_() -> {timeout, 10, fun() -> start() end}.
+t_002_test_() -> {timeout, 10, fun() -> create_and_clear_table() end}.
+t_003_test_() -> {timeout, 10, fun() -> basic_insert() end}.
+t_004_test_() -> {timeout, 10, fun() -> table_count() end}.
+t_005_test_() -> {timeout, 10, fun() -> verify_records() end}.
+t_006_test_() -> {timeout, 10, fun() -> counter_inc_dec() end}.
+t_007_test_() -> {timeout, 10, fun() -> watch_for_update() end}.
+t_008_test_() -> {timeout, 10, fun() -> watch_for_delete() end}.
+t_009_test_() -> {timeout, 10, fun() -> select_no_continuation() end}.
+t_010_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
+t_011_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
+t_012_test_() -> {timeout, 10, fun() -> check_field_types() end}.
+t_013_test_() -> {timeout, 10, fun() -> stop() end}.
 
-zzz_test() ->
-    %% Delete everything from the test database
-    Db = mfdb_conn:connection(),
-    erlfdb:clear_range(Db, <<>>, <<16#FF>>).
-
-aa_create_test() ->
-    Ok = mfdb:create_table(test_a, [{record, ?TEST_A}]),
+start() ->
+    {ok, _ClusterFile} = init_test_cluster_int([]),
+    {Ok, _} = application:ensure_all_started(mfdb),
     ?assertEqual(ok, Ok).
 
-bb_insert_test() ->
+stop() ->
+    %% Delete everything from the test database
+    Db = mfdb_conn:connection(),
+    erlfdb:clear_range(Db, <<>>, <<16#FF>>),
+    true.
+
+create_and_clear_table() ->
+    Ok = mfdb:create_table(test_a, [{record, ?TEST_A}]),
+    Ok = mfdb:clear_table(test_a),
+    ?assertEqual(ok, Ok).
+
+basic_insert() ->
     [mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) || X <- lists:seq(1, 50)],
     {ok, Count} = mfdb:table_info(test_a, count),
     ?assertEqual(50, Count).
 
-cc_count_test() ->
+table_count() ->
     Rec50In = #test_a{id = 50, value = integer_to_binary(50, 32)},
     {ok, Rec50Out} = mfdb:lookup(test_a, 50),
     ?assertEqual(Rec50In, Rec50Out).
 
-dd_value_test() ->
+verify_records() ->
     IdSumIn = lists:sum([X || X <- lists:seq(1, 50)]),
     IdSumOut = mfdb:fold(test_a, fun(#test_a{id = X}, Acc) -> Acc + X end, 0),
     ?assertEqual(IdSumIn, IdSumOut).
 
-ee_counter_test() ->
+counter_inc_dec() ->
     ?assertEqual(50, mfdb:update_counter(test_a, my_counter, 50)),
     ?assertEqual(40, mfdb:update_counter(test_a, my_counter, -10)),
     %% cannot go negative
     ?assertEqual(0, mfdb:update_counter(test_a, my_counter, -100)).
 
-ff_watcher_aa_test() ->
+watch_for_update() ->
     ok = mfdb:subscribe(test_a, 1, {notify, info}),
     NewRec = #test_a{id = 1, value = <<"updated">>},
     ok = mfdb:insert(test_a, NewRec),
@@ -52,7 +69,7 @@ ff_watcher_aa_test() ->
             ?assertEqual(Expect, Msg)
     end.
 
-ff_watcher_bb_test() ->
+watch_for_delete() ->
     ok = mfdb:subscribe(test_a, 1, {notify, info}),
     ok = mfdb:delete(test_a, 1),
     Expect = {test_a, 1, deleted},
@@ -61,7 +78,7 @@ ff_watcher_bb_test() ->
             ?assertEqual(Expect, Msg)
     end.
 
-gg_test() ->
+select_no_continuation() ->
     Ms = [{#test_a{id = '$1', _ = '_'},[{'=<', '$1', 15}, {'>', '$1', 10}],['$_']}],
     {Recs, '$end_of_table'} = mfdb:select(test_a, Ms),
     ?assertEqual(5, length(Recs)),
@@ -69,7 +86,7 @@ gg_test() ->
     Ids = [Id || #test_a{id = Id} <- Recs],
     ?assertEqual(ExpectIds, Ids).
 
-hh_test() ->
+select_with_continuation() ->
     [mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) || X <- lists:seq(1, 100)],
     Ms = [{#test_a{id = '$1', _ = '_'},[{'=<', '$1', 100}, {'>=', '$1', 1}],['$_']}],
     %% Select returns continuations in chunks of 50 records
@@ -80,12 +97,20 @@ hh_test() ->
     Ids = [Id || #test_a{id = Id} <- RecsA ++ RecsB],
     ?assertEqual(ExpectIds, Ids).
 
-ii_test() ->
+import_from_terms_file() ->
     ok = mfdb:clear_table(test_a),
     {ok, CWD} = file:get_cwd(),
     SourceFile = filename:join(CWD, "priv/test_import.terms"),
     Added = mfdb:import(test_a, SourceFile),
     ?assertEqual({ok, 10}, Added).
+
+check_field_types() ->
+    Error0 = mfdb:insert(test_a, #test_a{id = <<"one">>}),
+    ?assertEqual({error,{id,<<"one">>,not_a_integer}}, Error0),
+    Error1 = mfdb:insert(test_a, #test_a{id = 1, value = name_atom}),
+    ?assertEqual({error,{value,name_atom,not_a_binary}}, Error1),
+    Error2 = mfdb:insert(test_a, #test{id = 1, value = <<"value">>}),
+    ?assertEqual({error,invalid_record}, Error2).
 
 kg(L, K, D) ->
     case lists:keyfind(K, 1, L) of

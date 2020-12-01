@@ -7,15 +7,7 @@
   {git,"https://github.com/uwiger/gproc.git",
        {ref,"3737f2b958a5908d7a3870046ae162c5b9bf971c"}},
   0},
- {<<"quickrand">>,
-  {git,"https://github.com/okeuday/quickrand.git",
-       {ref,"6fc9c094e11d7d7430da9039d1dea648f12d42f0"}},
-  1},
- {<<"sext">>,{pkg,<<"sext">>,<<"1.8.0">>},0},
- {<<"uuid">>,
-  {git,"https://github.com/SiftLogic/uuid.git",
-       {ref,"bd17a367415532ff299a23765e071d7b13397600"}},
-  0}]}.
+ {<<"sext">>,{pkg,<<"sext">>,<<"1.8.0">>},0}]}.
 [
 {pkg_hash,[
  {<<"sext">>, <<"90A95B889F5C781B70BBCF44278B763148E313C376B60D87CE664CB1C1DD29B5">>}]},

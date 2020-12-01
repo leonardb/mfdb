@@ -41,7 +41,8 @@
 -export([flow/2,
          validate_record/1,
          validate_indexes/2,
-         check_record/3]).
+         check_field_types/2,
+         check_index_sizes/2]).
 
 -include("mfdb.hrl").
 
@@ -92,61 +93,66 @@ sort(L) ->
 %% in order to reduce the load potentially added by indexes
 %% @end
 put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
-    Tx = erlfdb:create_transaction(Db),
+    %%Tx = erlfdb:create_transaction(Db),
     %% Operation is on a data table
-    EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
-    EncRecord = term_to_binary(Record),
-    Size = byte_size(EncRecord),
-    {DoSave, SizeInc, CountInc} =
-        case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
-            <<"mfdb_ref", OldSize:32, OldMfdbRefPartId/binary>> ->
-                %% Remove any index values that may exist
-                OldEncRecord = parts_value_(OldMfdbRefPartId, TabPfx, Tx),
-                %% Has something in the record changed?
-                RecordChanged = OldEncRecord =/= EncRecord,
-                case RecordChanged of
-                    true ->
-                        %% Remove any old index pointers
-                        ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
-                        %% Replacing entry, increment by size diff
-                        {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(OldMfdbRefPartId),
-                        Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
-                        ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Start)),
-                        %% Replacing entry, only changes the size
-                        {true, ((OldSize * -1) + Size), 0};
-                    false ->
-                        {false, 0, 0}
-                end;
-            <<OldSize:32, OldEncRecord/binary>> when OldEncRecord =/= EncRecord ->
-                %% Record exists, but has changed
-                %% Remove any old index pointers
-                ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
-                %% Replacing entry, only changes the size
-                {true, ((OldSize * -1) + Size), 0};
-            <<_OldSize:32, OldEncRecord/binary>> when OldEncRecord =:= EncRecord ->
-                %% Record already exists and is unchanged
-                {false, 0, 0};
-            not_found ->
-                %% New entry, so increase count and add size
-                {true, Size, 1}
-        end,
-    case DoSave of
-        true ->
-            put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
-            ok = create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes),
-            %% Update the 'size' of stored data
-            ok = inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc),
-            %% Update the count of stored records
-            ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
-            %% Create/update any TTLs
-            ok = ttl_add(Tx, TabPfx, Ttl, PkValue),
-            %% and finally commit the changes
-            ok = erlfdb:wait(erlfdb:commit(Tx));
-        false ->
-            %% Update any TTLs
-            ok = ttl_add(Tx, TabPfx, Ttl, PkValue),
-            ok = erlfdb:wait(erlfdb:commit(Tx))
-    end.
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
+              EncRecord = term_to_binary(Record),
+              Size = byte_size(EncRecord),
+              {DoSave, SizeInc, CountInc} =
+                  case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+                      <<"mfdb_ref", OldSize:32, OldMfdbRefPartId/binary>> ->
+                          %% Remove any index values that may exist
+                          OldEncRecord = parts_value_(OldMfdbRefPartId, TabPfx, Tx),
+                          %% Has something in the record changed?
+                          RecordChanged = OldEncRecord =/= EncRecord,
+                          case RecordChanged of
+                              true ->
+                                  %% Remove any old index pointers
+                                  ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
+                                  %% Replacing entry, increment by size diff
+                                  {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(OldMfdbRefPartId),
+                                  Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
+                                  ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Start)),
+                                  %% Replacing entry, only changes the size
+                                  {true, ((OldSize * -1) + Size), 0};
+                              false ->
+                                  {false, 0, 0}
+                          end;
+                      <<OldSize:32, OldEncRecord/binary>> when OldEncRecord =/= EncRecord ->
+                          %% Record exists, but has changed
+                          %% Remove any old index pointers
+                          ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
+                          %% Replacing entry, only changes the size
+                          {true, ((OldSize * -1) + Size), 0};
+                      <<_OldSize:32, OldEncRecord/binary>> when OldEncRecord =:= EncRecord ->
+                          %% Record already exists and is unchanged
+                          {false, 0, 0};
+                      not_found ->
+                          %% New entry, so increase count and add size
+                          {true, Size, 1}
+                  end,
+              case DoSave of
+                  true ->
+                      put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
+                      ok = create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes),
+                      %% Update the 'size' of stored data
+                      ok = inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc),
+                      %% Update the count of stored records
+                      ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
+                      %% Create/update any TTLs
+                      ok = ttl_add(Tx, TabPfx, Ttl, PkValue);
+                  %% and finally commit the changes
+                  %%ok = erlfdb:wait(erlfdb:commit(Tx));
+                  false ->
+                      put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
+                      %% Update any TTLs
+                      ok = ttl_add(Tx, TabPfx, Ttl, PkValue)
+                      %%ok = erlfdb:wait(erlfdb:commit(Tx))
+              end
+      end).
 
 put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)
   when Size > ?MAX_VALUE_SIZE ->
@@ -542,49 +548,28 @@ validate_fields_([{Name, Types} | Rest])
 validate_fields_([H | _]) ->
     {error, invalid_record_field, H}.
 
-field_name(N) when is_atom(N) ->
-    N;
-field_name({N, _Type}) when is_atom(N) ->
-    N.
-
-check_record(Rec0, Fields, Index) ->
-    Rec = tuple_to_list(Rec0),
-    Idx = tuple_to_list(Index),
-    Zipped = tl(lists:zip3(Rec, [undefined | Fields], Idx)),
-    check_record_(Zipped).
-
-check_record_([]) ->
+check_field_types([], []) ->
     true;
-check_record_([{_Val, Field, undefined} | Rest]) when is_atom(Field) ->
-    check_record_(Rest);
-check_record_([{Val, Field, undefined} | Rest]) ->
-    case Field of
-        Field when is_atom(Field) ->
-            check_record_(Rest);
-        {FieldName, Type} ->
-            case type_check_(Val, Type) of
-                true ->
-                    check_record_(Rest);
-                false ->
-                    {error, {FieldName, list_to_atom("not_a_" ++ atom_to_list(Type))}}
-            end
-    end;
-check_record_([{Val, Field, #idx{}} | Rest]) ->
+check_field_types([_Val | RestVal], [Field | RestFields]) when is_atom(Field) ->
+    check_field_types(RestVal, RestFields);
+check_field_types([Val | RestVal], [{Field, Type} | RestFields]) ->
+    case type_check_(Val, Type) of
+        true ->
+            check_field_types(RestVal, RestFields);
+        false ->
+            {error, {Field, Val, list_to_atom("not_a_" ++ atom_to_list(Type))}}
+    end.
+
+check_index_sizes([], []) ->
+    true;
+check_index_sizes([_Val | RestVal], [undefined | RestIdx]) ->
+    check_index_sizes(RestVal, RestIdx);
+check_index_sizes([Val | RestVal], [#idx{pos = Pos} | RestIdx]) ->
     case byte_size(term_to_binary(Val)) of
         X when X > ?MAX_KEY_SIZE ->
-            {error, {field_name(Field), too_large_for_index}};
+            {error, {too_large_for_index, Pos}};
         _ ->
-            case Field of
-                Field when is_atom(Field) ->
-                    check_record_(Rest);
-                {FieldName, Type} ->
-                    case type_check_(Val, Type) of
-                        true ->
-                            check_record_(Rest);
-                        false ->
-                            {error, {FieldName, list_to_atom("not_a_" ++ atom_to_list(Type))}}
-                    end
-            end
+            check_index_sizes(RestVal, RestIdx)
     end.
 
 type_check_(undefined, undefined) ->

@@ -153,15 +153,32 @@ index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
     end.
 
 %% @doc insert/replace a record. Types of values are checked if table has typed fields.
--spec insert(Table :: table_name(), Object :: tuple()) -> ok | {error, any()}.
-insert(Table, Object) when is_atom(Table) andalso is_tuple(Object) ->
+-spec insert(Table :: table_name(), ObjectTuple :: tuple()) -> ok | {error, any()}.
+insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
     #st{record_name = RecName, fields = Fields, index = Index} = St = mfdb_manager:st(Table),
-    InRec = {element(1, Object), size(Object) - 1},
-    Expect = {RecName, length(Fields)},
+    IndexList = tl(tuple_to_list(Index)),
+    ExpectLength = length(Fields) + 1,
+    TypeCheckFun = case lists:all(fun(F) -> is_atom(F) end, Fields) of
+                       true ->
+                           fun(_,_) -> true end;
+                       false ->
+                           fun mfdb_lib:check_field_types/2
+                   end,
+    IndexCheckFun = case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
+                        true ->
+                            fun(_,_) -> true end;
+                        false ->
+                            fun mfdb_lib:check_index_sizes/2
+                    end,
+    [RName | ObjectList] = tuple_to_list(ObjectTuple),
+    [RKey | _] = ObjectList,
+    InRec = {RName, size(ObjectTuple)},
+    Expect = {RecName, ExpectLength},
     %% Functions must return 'true' to continue, anything else will exit early
     Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
-            {fun mfdb_lib:check_record/3, [Object, Fields, Index]},
-            {fun mfdb_lib:put/3, [St, element(2, Object), Object]}],
+            {TypeCheckFun, [ObjectList, Fields]},
+            {IndexCheckFun, [ObjectList, IndexList]},
+            {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
     mfdb_lib:flow(Flow, true).
 
 %% @doc Atomic counter update. IMPORTANT: ONLY POSITIVE INTEGER
@@ -235,9 +252,13 @@ handle_call(clear_table, _From, #{table := Table} = State) ->
     #st{db = Db, pfx = TblPfx, index = Indexes} = mfdb_manager:st(Table),
     mfdb_lib:clear_table(Db, TblPfx, Indexes),
     {reply, ok, State};
-handle_call({import, _SourceFile}, _From, State) ->
+handle_call({import, SourceFile}, From, #{table := Table} = State) ->
     %% potentially long-running operation. Caller waits 'infinity'
-    {reply, ok, State};
+    ImportId = erlang:make_ref(),
+    {Pid, Ref} = spawn_monitor(fun() -> do_import_(Table, SourceFile, ImportId) end),
+    OldWaiters = maps:get(waiters, State, []),
+    NewWaiters = [{ImportId, Pid, Ref, From} | OldWaiters],
+    {noreply, State#{waiters => NewWaiters}};
 handle_call({table_info, all}, _From, #{table := Table} = State) ->
     #st{} = St = mfdb_manager:st(Table),
     Count = mfdb_lib:table_count(St),
@@ -282,6 +303,28 @@ handle_info(poll, #{table := Table, poller := Poller} = State) ->
             {noreply, State#{poller => poll_timer(Poller), reaper => PidRef}};
         _ ->
             {noreply, State#{poller => poll_timer(Poller)}}
+    end;
+handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, {ok, X}}}}, #{waiters := Waiters} = State) ->
+    %% Import is completed
+    case lists:keytake(ImportId, 1, Waiters) of
+        false ->
+            error_logger:error_msg("Missing waiter for import ~p", [ImportId]),
+            {noreply, State};
+        {value, {ImportId, _Pid1, Ref, From}, NWaiters} ->
+            demonitor(Ref),
+            gen_server:reply(From, {ok, X}),
+            {noreply, State#{waiters => NWaiters}}
+    end;
+handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, ImportError}}}, #{waiters := Waiters} = State) ->
+    %% Import is completed
+    case lists:keytake(ImportId, 1, Waiters) of
+        false ->
+            error_logger:error_msg("Missing waiter for import ~p", [ImportId]),
+            {noreply, State};
+        {value, {ImportId, _Pid1, Ref, From}, NWaiters} ->
+            demonitor(Ref),
+            gen_server:reply(From, ImportError),
+            {noreply, State#{waiters => NWaiters}}
     end;
 handle_info({'DOWN', Ref, process, _Pid0, _Reason}, #{poller := Poller} = State) ->
     case maps:get(reaper, State, undefined) of
@@ -1018,3 +1061,65 @@ rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
     NHasMore = HasMore0 orelse length(RawRows) > (DataLimit - DataCount),
     {LastKey0, _} = lists:last(Rows0),
     {Rows0, NHasMore, LastKey0}.
+
+%% The do_import is based off of the file:consult/1 code which reads in terms from a file
+do_import_(Table, SourceFile, ImportId) ->
+    #st{record_name = RecName, fields = Fields, index = Index} = St = mfdb_manager:st(Table),
+    IndexList = tl(tuple_to_list(Index)),
+    ExpectLength = length(Fields) + 1,
+    TypeCheckFun = case lists:all(fun(F) -> is_atom(F) end, Fields) of
+                       true ->
+                           fun(_,_) -> true end;
+                       false ->
+                           fun mfdb_lib:check_field_types/2
+                   end,
+    IndexCheckFun = case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
+                        true ->
+                            fun(_,_) -> true end;
+                        false ->
+                            fun mfdb_lib:check_index_sizes/2
+                    end,
+    ImportFun =
+        fun(ObjectTuple, Cnt) ->
+                [RName | ObjectList] = tuple_to_list(ObjectTuple),
+                [RKey | _] = ObjectList,
+                InRec = {RName, size(ObjectTuple)},
+                Expect = {RecName, ExpectLength},
+                %% Functions must return 'true' to continue, anything else will exit early
+                Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
+                        {TypeCheckFun, [ObjectList, Fields]},
+                        {IndexCheckFun, [ObjectList, IndexList]},
+                        {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
+                try mfdb_lib:flow(Flow, true) of
+                    ok ->
+                        Cnt + 1;
+                    _ ->
+                        Cnt
+                catch
+                    E:M:Stack ->
+                        error_logger:error_msg("Import error: ~p", [{E,M,Stack}]),
+                        Cnt
+                end
+        end,
+    case file:open(SourceFile, [read]) of
+        {ok, Fd} ->
+            R = consult_stream(Fd, ImportFun, 0),
+            _ = file:close(Fd),
+            exit({normal, {ImportId, {ok, R}}});
+        Error ->
+            exit({normal, {ImportId, Error}})
+    end.
+
+consult_stream(Fd, Line, Fun, Acc) ->
+    case io:read(Fd, '', Line) of
+        {ok, Term, EndLine} ->
+            consult_stream(Fd, EndLine, Fun, Fun(Term, Acc));
+        {error, Error, _Line} ->
+            {error, Error};
+        {eof, _Line} ->
+            Acc
+    end.
+
+consult_stream(Fd, Fun, Acc) ->
+    _ = epp:set_encoding(Fd),
+    consult_stream(Fd, 1, Fun, Acc).

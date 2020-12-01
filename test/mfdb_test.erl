@@ -8,7 +8,6 @@
 
 aaa_test() ->
     {ok, ClusterFile} = init_test_cluster_int([]),
-
     ?assert(is_binary(ClusterFile)),
     application:ensure_all_started(mfdb),
     ok.
@@ -81,6 +80,12 @@ hh_test() ->
     Ids = [Id || #test_a{id = Id} <- RecsA ++ RecsB],
     ?assertEqual(ExpectIds, Ids).
 
+ii_test() ->
+    ok = mfdb:clear_table(test_a),
+    {ok, CWD} = file:get_cwd(),
+    SourceFile = filename:join(CWD, "priv/test_import.terms"),
+    Added = mfdb:import(test_a, SourceFile),
+    ?assertEqual({ok, 10}, Added).
 
 kg(L, K, D) ->
     case lists:keyfind(K, 1, L) of
@@ -130,41 +135,41 @@ init_test_cluster_int(Options) ->
 
 fdb_server_fun(FDBServerBin, IpAddr, Port, ClusterFile, Dir, Options) ->
     fun() ->
-        % Open the fdbserver port
-        FDBPortName = {spawn_executable, FDBServerBin},
-        FDBPortArgs = [
-            <<"-p">>, ip_port_to_str(IpAddr, Port),
-            <<"-C">>, ClusterFile,
-            <<"-d">>, Dir,
-            <<"-L">>, Dir
-        ],
-        FDBPortOpts = [{args, FDBPortArgs}],
-        FDBServer = erlang:open_port(FDBPortName, FDBPortOpts),
-        {os_pid, FDBPid} = erlang:port_info(FDBServer, os_pid),
+                                                % Open the fdbserver port
+            FDBPortName = {spawn_executable, FDBServerBin},
+            FDBPortArgs = [
+                           <<"-p">>, ip_port_to_str(IpAddr, Port),
+                           <<"-C">>, ClusterFile,
+                           <<"-d">>, Dir,
+                           <<"-L">>, Dir
+                          ],
+            FDBPortOpts = [{args, FDBPortArgs}],
+            FDBServer = erlang:open_port(FDBPortName, FDBPortOpts),
+            {os_pid, FDBPid} = erlang:port_info(FDBServer, os_pid),
 
-        % Open the monitor pid
-        MonitorPath = get_monitor_path(),
-        ErlPid = os:getpid(),
+                                                % Open the monitor pid
+            MonitorPath = get_monitor_path(),
+            ErlPid = os:getpid(),
 
-        MonitorPortName = {spawn_executable, MonitorPath},
-        MonitorPortArgs = [{args, [ErlPid, integer_to_binary(FDBPid)]}],
-        Monitor = erlang:open_port(MonitorPortName, MonitorPortArgs),
+            MonitorPortName = {spawn_executable, MonitorPath},
+            MonitorPortArgs = [{args, [ErlPid, integer_to_binary(FDBPid)]}],
+            Monitor = erlang:open_port(MonitorPortName, MonitorPortArgs),
 
-        init_fdb_db(ClusterFile, Options),
+            init_fdb_db(ClusterFile, Options),
 
-        receive
-            {wait_for_init, ParentPid} ->
-                ParentPid ! {initialized, self()}
-        after 5000 ->
+            receive
+                {wait_for_init, ParentPid} ->
+                    ParentPid ! {initialized, self()}
+            after 5000 ->
+                    true = erlang:port_close(FDBServer),
+                    true = erlang:port_close(Monitor),
+                    erlang:error(fdb_parent_died)
+            end,
+
+            port_loop(FDBServer, Monitor),
+
             true = erlang:port_close(FDBServer),
-            true = erlang:port_close(Monitor),
-            erlang:error(fdb_parent_died)
-        end,
-
-        port_loop(FDBServer, Monitor),
-
-        true = erlang:port_close(FDBServer),
-        true = erlang:port_close(Monitor)
+            true = erlang:port_close(Monitor)
     end.
 
 get_available_port() ->

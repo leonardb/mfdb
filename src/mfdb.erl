@@ -1,22 +1,17 @@
-%%%-------------------------------------------------------------------
-%%% @copyright (C) 2020, Leonard Boyce
-%%% @doc
-%%%  A simple record layer to FDB for Erlang which aims to emulate
-%%%  a limited subset of mnesia-like behaviors and leverage the
-%%%  mnesia/ets matchspec system.
+%%% @copyright 2020 Leonard Boyce <leonard.boyce@lucidlayer.com>
 %%%
-%%%  Supports:
-%%%    - typed fields
-%%%    - secondary indexes
+%%% Licensed under the Apache License, Version 2.0 (the "License"); you may not
+%%% use this file except in compliance with the License. You may obtain a copy of
+%%% the License at
 %%%
-%%%  Caveats:
-%%%    Pk is *always* the 1st defined field of the record (no {keypos, X} option).
-%%%    Secondary indexes can be very expensive as each index requires multiple operations
-%%%      when a record is added/updated/deleted
-%%%    Any indexed fields are limited to 9Kb
-%%%    No altering tables or indexes (maybe later)
-%%% @end
-%%%-------------------------------------------------------------------
+%%%   http://www.apache.org/licenses/LICENSE-2.0
+%%%
+%%% Unless required by applicable law or agreed to in writing, software
+%%% distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+%%% WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+%%% License for the specific language governing permissions and limitations under
+%%% the License.
+
 -module(mfdb).
 
 -behaviour(gen_server).

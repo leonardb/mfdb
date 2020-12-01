@@ -435,21 +435,34 @@ do_update_counter(Tx, TabPfx, Key0, Increment) when Increment < 0 ->
         Counters0 ->
             lists:foldl(
               fun(_, ok) ->
+                      %% no more deduction necessary
                       ok;
-                 ({Key, <<OldVal:64/unsigned-little-integer>>}, waiting) when (OldVal + Increment) >= 0 ->
-                      ok = erlfdb:wait(erlfdb:add(Tx, Key, Increment));
-                 (_, R) ->
+                 (_, {_, 0}) ->
+                      %% no more deduction necessary
+                      ok;
+                 ({_, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
+                    when OldVal =:= 0 ->
                       %% Skip zero-value keys
-                      R
-              end, waiting, shuffle(Counters0))
+                      {waiting, Inc0};
+                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
+                    when (OldVal + Inc0) >= 0 ->
+                      %% Full adjustment of counter
+                      ok = erlfdb:wait(erlfdb:add(Tx, Key, Inc0));
+                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
+                    when OldVal > 0 ->
+                      %% Partial adjustment of counter
+                      Rem = OldVal + Inc0,
+                      ok = erlfdb:wait(erlfdb:add(Tx, Key, OldVal * -1)),
+                      {waiting, Rem}
+              end, {waiting, Increment}, shuffle(Counters0))
     end,
     NewVal = counter_read_(Tx, TabPfx, Key0),
     erlfdb:wait(erlfdb:commit(Tx)),
     NewVal;
 do_update_counter(Tx, TabPfx, Key, Increment) ->
     %% Increment random counter
-    Key = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
-    erlfdb:wait(erlfdb:add(Tx, Key, Increment)),
+    EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
+    erlfdb:wait(erlfdb:add(Tx, EncKey, Increment)),
     %% Read the updated counter value
     NewVal = counter_read_(Tx, TabPfx, Key),
     erlfdb:wait(erlfdb:commit(Tx)),
@@ -530,6 +543,18 @@ check_record_([]) ->
     true;
 check_record_([{_Val, Field, undefined} | Rest]) when is_atom(Field) ->
     check_record_(Rest);
+check_record_([{Val, Field, undefined} | Rest]) ->
+    case Field of
+        Field when is_atom(Field) ->
+            check_record_(Rest);
+        {FieldName, Type} ->
+            case type_check_(Val, Type) of
+                true ->
+                    check_record_(Rest);
+                false ->
+                    {error, {FieldName, list_to_atom("not_a_" ++ atom_to_list(Type))}}
+            end
+    end;
 check_record_([{Val, Field, #idx{}} | Rest]) ->
     case byte_size(term_to_binary(Val)) of
         X when X > ?MAX_KEY_SIZE ->

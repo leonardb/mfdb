@@ -410,35 +410,24 @@ save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
 
 update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
     %% Atomic counter increment
-    %% Mnesia counters are dirty only, and cannot go below zero
-    %%  dirty_update_counter({Tab, Key}, Incr) -> NewVal | exit({aborted, Reason})
-    %%    Calls mnesia:dirty_update_counter(Tab, Key, Incr).
     %%
-    %%  dirty_update_counter(Tab, Key, Incr) -> NewVal | exit({aborted, Reason})
-    %%    Mnesia has no special counter records. However, records of
-    %%    the form {Tab, Key, Integer} can be used as (possibly disc-resident)
-    %%    counters when Tab is a set. This function updates a counter with a positive
-    %%    or negative number. However, counters can never become less than zero.
-    %%    There are two significant differences between this function and the action
-    %%    of first reading the record, performing the arithmetics, and then writing the record:
+    %% If Key does not exists, a new record is created with value Incr if it is larger
+    %% than 0, otherwise it is set to 0.
     %%
-    %%    It is much more efficient. mnesia:dirty_update_counter/3 is performed as an
-    %%    atomic operation although it is not protected by a transaction.
-    %%    If two processes perform mnesia:dirty_update_counter/3 simultaneously, both
-    %%    updates take effect without the risk of losing one of the updates. The new
-    %%    value NewVal of the counter is returned.
-    %%
-    %%    If Key do not exists, a new record is created with value Incr if it is larger
-    %%    than 0, otherwise it is set to 0.
-    %%
-    %% This implementation tries to follow the same pattern.
     %% Increment the counter and then read the new value
-    %%  - if the new value is < 0 (not allowed), abort
+    %%  - if the new value is < 0 (not allowed), return 0
     %%  - if the new value is > 0, return the new value
     %% The exception:
     %%   if the counter does not exist and is created with a Incr < 0
-    %%    we abort instead of creating a counter with value of '0'
-    %% NOTE: FDB counters will wrap: EG Incr 0 by -1 wraps to max value
+    %%    we create a counter with value of '0'
+    %%
+    %% Counters in mfdb are implemented as pools of counters.
+    %% There are ?ENTRIES_PER_COUNTER in each counter pool.
+    %% Increment operations affect a random counter in the pool
+    %% to improve parallelism since everything in fdb is transactional.
+    %% Decrement operations do the same, with some logic to distribute
+    %% the decrease over multiple counters should the decrement value
+    %% be greater than the value of the counter
     Tx = erlfdb:create_transaction(Db),
     try do_update_counter(Tx, TabPfx, Key, Incr)
     catch
@@ -448,7 +437,7 @@ update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
             update_counter(Db, TabPfx, Key, Incr)
     end.
 
-do_update_counter(Tx, TabPfx, Key0, Increment) when Increment < 0 ->
+do_update_counter(Tx, TabPfx, Key0, Decrement) when Decrement < 0 ->
     Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key0, ?FDB_WC}),
     case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
         [] ->
@@ -463,19 +452,20 @@ do_update_counter(Tx, TabPfx, Key0, Increment) when Increment < 0 ->
                       ok;
                  ({_, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
                     when OldVal =:= 0 ->
-                      %% Skip zero-value keys
+                      %% Counter cannot go below zero as it'll wrap to counter max value,
+                      %% so Skip zero-value keys
                       {waiting, Inc0};
                  ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
                     when (OldVal + Inc0) >= 0 ->
-                      %% Full adjustment of counter
+                      %% Decrement counter by full value
                       ok = erlfdb:wait(erlfdb:add(Tx, Key, Inc0));
                  ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
                     when OldVal > 0 ->
-                      %% Partial adjustment of counter
+                      %% Partial decrement of counter
                       Rem = OldVal + Inc0,
                       ok = erlfdb:wait(erlfdb:add(Tx, Key, OldVal * -1)),
                       {waiting, Rem}
-              end, {waiting, Increment}, shuffle(Counters0))
+              end, {waiting, Decrement}, shuffle(Counters0))
     end,
     NewVal = counter_read_(Tx, TabPfx, Key0),
     erlfdb:wait(erlfdb:commit(Tx)),

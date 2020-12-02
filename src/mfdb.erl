@@ -48,6 +48,8 @@
 -export([subscribe/3,
          unsubscribe/2]).
 
+-export([status/0]).
+
 %% This is really just here to prevent dialyzer
 %% from complaining about the Limit match clauses
 %% for non-50 value cases
@@ -233,6 +235,13 @@ unsubscribe(Table, Key) when is_atom(Table) ->
         E:M:_St ->
             {error, {E,M}}
     end.
+
+%% @doc return FoundDB cluster status information as a JSON term
+%% @see https://apple.github.io/foundationdb/mr-status.html
+-spec status() -> jsx:json_term().
+status() ->
+    Db = mfdb_conn:connection(),
+    jsx:decode(erlfdb:get(Db, <<16#FF,16#FF,"/status/json">>), [{return_maps, false}]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%

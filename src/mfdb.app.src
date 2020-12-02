@@ -14,7 +14,8 @@
     public_key,
     ssl,
     erlfdb,
-    gproc]},
+    gproc,
+    jsx]},
   {licenses, ["Apache 2.0"]},
   {links, [{"Github", "https://github.com/leonardb/mfdb"}]}
  ]}.

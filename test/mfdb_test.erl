@@ -56,8 +56,10 @@ verify_records() ->
 counter_inc_dec() ->
     ?assertEqual(50, mfdb:update_counter(test_a, my_counter, 50)),
     ?assertEqual(40, mfdb:update_counter(test_a, my_counter, -10)),
+    mfdb:set_counter(test_a, my_counter, 11),
+    ?assertEqual(10, mfdb:update_counter(test_a, my_counter, -1)),
     %% cannot go negative
-    ?assertEqual(0, mfdb:update_counter(test_a, my_counter, -100)).
+    ?assertEqual(-90, mfdb:update_counter(test_a, my_counter, -100)).
 
 watch_for_update() ->
     ok = mfdb:subscribe(test_a, 1, {notify, info}),

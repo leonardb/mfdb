@@ -31,7 +31,8 @@
 
 -export([insert/2]).
 
--export([update_counter/3]).
+-export([set_counter/3,
+         update_counter/3]).
 
 -export([delete/2]).
 
@@ -188,11 +189,17 @@ insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
             {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
     mfdb_lib:flow(Flow, true).
 
-%% @doc Atomic counter update
--spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> non_neg_integer().
+%% @doc Atomic counter increment/decrement
+-spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> integer().
 update_counter(Table, Key, Increment) when is_atom(Table) andalso is_integer(Increment) ->
     #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
     mfdb_lib:update_counter(Db, TabPfx, Key, Increment).
+
+%% @doc Atomic set of a counter value
+-spec set_counter(Table :: table_name(), Key :: any(), Value :: integer()) -> ok.
+set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
+    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
+    mfdb_lib:set_counter(Db, TabPfx, Key, Value).
 
 %% @doc Applies a function to all records in the table
 -spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any()) ->  any().

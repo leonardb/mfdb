@@ -30,6 +30,7 @@
          table_count/1,
          table_data_size/1,
          update_counter/4,
+         set_counter/4,
          validate_reply_/1,
          unixtime/0,
          unixminute/0,
@@ -198,40 +199,6 @@ ttl_remove(?IS_TX = Tx, TabPfx, _TTL, Key) ->
 
 inc_counter_(_Tx, _TblPfx, _KeyPfx, 0) ->
     ok;
-inc_counter_(Tx, TblPfx, KeyPfx0, Inc) when Inc < 0 ->
-    %% decrement a random counter associated with the key.
-    %% We need to read all keys since we cannot decrement counter where counter =< 0
-    KeyPfx = case KeyPfx0 of
-                 K0 when is_binary(K0) ->
-                     {K0, ?FDB_WC};
-                 {K0, V0} ->
-                     {K0, V0, ?FDB_WC}
-             end,
-    Pfx = encode_prefix(TblPfx, KeyPfx),
-    case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
-        [] ->
-            ok;
-        Counters0 ->
-            lists:foldl(
-              fun(_, ok) ->
-                      %% no more deduction necessary
-                      ok;
-                 (_, {_, 0}) ->
-                      %% no more deduction necessary
-                      ok;
-                 ({_, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0}) when OldVal =:= 0 ->
-                      %% Skip zero-value keys
-                      {waiting, Inc0};
-                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0}) when (OldVal + Inc0) >= 0 ->
-                      %% Full adjustment of counter
-                      ok = erlfdb:wait(erlfdb:add(Tx, Key, Inc0));
-                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0}) when OldVal > 0 ->
-                      %% Partial adjustment of counter
-                      Rem = OldVal + Inc0,
-                      ok = erlfdb:wait(erlfdb:add(Tx, Key, OldVal * -1)),
-                      {waiting, Rem}
-              end, {waiting, Inc}, shuffle(Counters0))
-    end;
 inc_counter_(Tx, TblPfx, Key0, Inc) ->
     %% Increment random counter
     Key1 = case Key0 of
@@ -242,9 +209,6 @@ inc_counter_(Tx, TblPfx, Key0, Inc) ->
            end,
     Key = encode_key(TblPfx, Key1),
     erlfdb:wait(erlfdb:add(Tx, Key, Inc)).
-
-shuffle(List) ->
-    [X || {_, X} <- lists:sort([{rand:uniform(), Item} || Item <- List])].
 
 create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes) when is_tuple(Indexes) ->
     create_any_indexes_(Tx, TabPfx, PkValue, Record, tuple_to_list(Indexes));
@@ -316,7 +280,7 @@ idx_matches(#st{db = Db, index = Indexes, pfx = TabPfx}, IdxPos, Value) ->
         [] ->
             0;
         KVs ->
-            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
+            lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
     end.
 
 table_data_size(#st{db = Db, pfx = TabPfx}) ->
@@ -325,7 +289,7 @@ table_data_size(#st{db = Db, pfx = TabPfx}) ->
         [] ->
             0;
         KVs ->
-            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
+            lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
     end.
 
 table_count(#st{db = Db, pfx = TabPfx}) ->
@@ -334,7 +298,7 @@ table_count(#st{db = Db, pfx = TabPfx}) ->
         [] ->
             0;
         KVs ->
-            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
+            lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
     end.
 
 bin_split(Bin) ->
@@ -409,25 +373,6 @@ save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
     save_parts_(Tx, TabPfx, PartId, PartInc + 1, <<>>).
 
 update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
-    %% Atomic counter increment
-    %%
-    %% If Key does not exists, a new record is created with value Incr if it is larger
-    %% than 0, otherwise it is set to 0.
-    %%
-    %% Increment the counter and then read the new value
-    %%  - if the new value is < 0 (not allowed), return 0
-    %%  - if the new value is > 0, return the new value
-    %% The exception:
-    %%   if the counter does not exist and is created with a Incr < 0
-    %%    we create a counter with value of '0'
-    %%
-    %% Counters in mfdb are implemented as pools of counters.
-    %% There are ?ENTRIES_PER_COUNTER in each counter pool.
-    %% Increment operations affect a random counter in the pool
-    %% to improve parallelism since everything in fdb is transactional.
-    %% Decrement operations do the same, with some logic to distribute
-    %% the decrease over multiple counters should the decrement value
-    %% be greater than the value of the counter
     Tx = erlfdb:create_transaction(Db),
     try do_update_counter(Tx, TabPfx, Key, Incr)
     catch
@@ -437,39 +382,6 @@ update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
             update_counter(Db, TabPfx, Key, Incr)
     end.
 
-do_update_counter(Tx, TabPfx, Key0, Decrement) when Decrement < 0 ->
-    Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key0, ?FDB_WC}),
-    case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
-        [] ->
-            ok;
-        Counters0 ->
-            lists:foldl(
-              fun(_, ok) ->
-                      %% no more deduction necessary
-                      ok;
-                 (_, {_, 0}) ->
-                      %% no more deduction necessary
-                      ok;
-                 ({_, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
-                    when OldVal =:= 0 ->
-                      %% Counter cannot go below zero as it'll wrap to counter max value,
-                      %% so Skip zero-value keys
-                      {waiting, Inc0};
-                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
-                    when (OldVal + Inc0) >= 0 ->
-                      %% Decrement counter by full value
-                      ok = erlfdb:wait(erlfdb:add(Tx, Key, Inc0));
-                 ({Key, <<OldVal:64/unsigned-little-integer>>}, {waiting, Inc0})
-                    when OldVal > 0 ->
-                      %% Partial decrement of counter
-                      Rem = OldVal + Inc0,
-                      ok = erlfdb:wait(erlfdb:add(Tx, Key, OldVal * -1)),
-                      {waiting, Rem}
-              end, {waiting, Decrement}, shuffle(Counters0))
-    end,
-    NewVal = counter_read_(Tx, TabPfx, Key0),
-    erlfdb:wait(erlfdb:commit(Tx)),
-    NewVal;
 do_update_counter(Tx, TabPfx, Key, Increment) ->
     %% Increment random counter
     EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
@@ -479,13 +391,23 @@ do_update_counter(Tx, TabPfx, Key, Increment) ->
     erlfdb:wait(erlfdb:commit(Tx)),
     NewVal.
 
+set_counter(?IS_DB = Db, TabPfx, Key, Value) ->
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
+              ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Pfx)),
+              ok = erlfdb:wait(erlfdb:add(Tx, EncKey, Value))
+      end).
+
 counter_read_(Tx, TabPfx, Key) ->
     Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
     case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
         [] ->
             0;
         KVs ->
-            lists:sum([Count || {_, <<Count:64/unsigned-little-integer>>} <- KVs])
+            lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
     end.
 
 validate_indexes([], _Record) ->

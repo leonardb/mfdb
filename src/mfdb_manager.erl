@@ -100,6 +100,23 @@ handle_call({create_table, Table, Options}, _From, S) ->
     {ok, Ttl} = ttl_(Options),
     R = create_table_(atom_to_binary(Table), Record, Indexes, Ttl),
     {reply, R, S};
+handle_call(table_list, _From, S) ->
+    [#conn{key = Key} = Conn] = ets:lookup(?MODULE, conn),
+    Db = mfdb_conn:connection(Conn),
+    EncKey = sext:encode({<<"keys">>, Key}),
+    case erlfdb:get(Db, EncKey) of
+        not_found ->
+            error_logger:error_msg("No configuration for key ~p", [Key]),
+            {reply, {error, no_tables}, S};
+        KeyId ->
+            TablesPfx = sext:prefix({KeyId, <<"table">>, ?FDB_WC}),
+            Tables0 = erlfdb:get_range_startswith(Db, TablesPfx),
+            Tables = [begin
+                          #st{tab = Table} = binary_to_term(TabEnc),
+                          binary_to_atom(Table)
+                      end || {_TabKey, TabEnc} <- Tables0],
+            {reply, {ok, Tables}, S}
+    end;
 handle_call(_, _, S) ->
     {reply, error, S}.
 

@@ -27,6 +27,7 @@
          delete_table/1,
          clear_table/1,
          table_info/2,
+         table_list/0,
          import/2]).
 
 -export([insert/2]).
@@ -81,29 +82,51 @@ create_table(Table, Options) when is_atom(Table) ->
     gen_server:call(mfdb_manager, {create_table, Table, Options}).
 
 %% @doc Delete all components and data of a table
--spec delete_table(Table :: table_name()) -> ok.
+-spec delete_table(Table :: table_name()) -> ok | {error, not_connected}.
 delete_table(Table) when is_atom(Table) ->
-    gen_server:call(?TABPROC(Table), stop, infinity),
-    gen_server:call(mfdb_manager, {delete_table, Table}).
+    try gen_server:call(?TABPROC(Table), stop, infinity),
+         gen_server:call(mfdb_manager, {delete_table, Table})
+    catch
+        exit:{noproc, _}:_Stack ->
+            {error, not_connected}
+    end.
 
 %% @doc Delete all records from a table
--spec clear_table(Table :: table_name()) -> ok.
+-spec clear_table(Table :: table_name()) -> ok | {error, not_connected}.
 clear_table(Table) when is_atom(Table) ->
-    gen_server:call(?TABPROC(Table), clear_table, infinity).
+    try gen_server:call(?TABPROC(Table), clear_table, infinity)
+    catch
+        exit:{noproc, _}:_Stack ->
+            {error, not_connected}
+    end.
 
 %% @doc import all records from SourceFile into a table.
--spec import(Table :: table_name(), SourceFile :: list()) -> ok.
+-spec import(Table :: table_name(), SourceFile :: list()) -> ok | {error, not_connected}.
 import(Table, SourceFile) when is_atom(Table) ->
-    gen_server:call(?TABPROC(Table), {import, SourceFile}, infinity).
+    try gen_server:call(?TABPROC(Table), {import, SourceFile}, infinity)
+    catch
+        exit:{noproc, _}:_Stack ->
+            {error, not_connected}
+    end.
 
 %% @doc get info about a table
--spec table_info(Table :: table_name(), InfoOpt :: info_opt()) -> ok.
+-spec table_info(Table :: table_name(), InfoOpt :: info_opt()) ->
+                        {ok, integer() | list({count | size, integer()})} | {error, not_connected}.
 table_info(Table, InfoOpt)
   when is_atom(Table) andalso
        (InfoOpt =:= all orelse
         InfoOpt =:= size orelse
         InfoOpt =:= count) ->
-    gen_server:call(?TABPROC(Table), {table_info, InfoOpt}).
+    try gen_server:call(?TABPROC(Table), {table_info, InfoOpt})
+    catch
+        exit:{noproc, _}:_Stack ->
+            {error, not_connected}
+    end.
+
+%% @doc List all tables
+-spec table_list() -> {ok, [] | list(atom())} | {error, no_tables}.
+table_list() ->
+    gen_server:call(mfdb_manager, table_list).
 
 %% @doc
 %% A mnesia-style select returning a continuation()

@@ -3,24 +3,27 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -record(test_a, {id :: integer(), value :: binary()}).
+%%-record(test_b, {id :: integer(), value :: binary()}).
 -record(test, {id :: integer(), value :: binary()}).
 -define(TEST_A, {test_a, [{id, integer}, {value, binary}]}).
+-define(TEST_B, {test_b, [{id, integer}, {value, binary}]}).
 -define(APP_KEY, <<"cb136a3d-de40-4a85-bd10-bb23f6f1ec2a">>).
 
 %% This sux, but it's the only way I can get around random timeout issues
 t_001_test_() -> {timeout, 10, fun() -> start() end}.
 t_002_test_() -> {timeout, 10, fun() -> create_and_clear_table() end}.
-t_003_test_() -> {timeout, 10, fun() -> basic_insert() end}.
-t_004_test_() -> {timeout, 10, fun() -> table_count() end}.
-t_005_test_() -> {timeout, 10, fun() -> verify_records() end}.
-t_006_test_() -> {timeout, 10, fun() -> counter_inc_dec() end}.
-t_007_test_() -> {timeout, 10, fun() -> watch_for_update() end}.
-t_008_test_() -> {timeout, 10, fun() -> watch_for_delete() end}.
-t_009_test_() -> {timeout, 10, fun() -> select_no_continuation() end}.
-t_010_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
-t_011_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
-t_012_test_() -> {timeout, 10, fun() -> check_field_types() end}.
-t_013_test_() -> {timeout, 10, fun() -> stop() end}.
+t_003_test_() -> {timeout, 10, fun() -> list_tables() end}.
+t_004_test_() -> {timeout, 10, fun() -> basic_insert() end}.
+t_005_test_() -> {timeout, 10, fun() -> table_count() end}.
+t_006_test_() -> {timeout, 10, fun() -> verify_records() end}.
+t_007_test_() -> {timeout, 10, fun() -> counter_inc_dec() end}.
+t_008_test_() -> {timeout, 10, fun() -> watch_for_update() end}.
+t_009_test_() -> {timeout, 10, fun() -> watch_for_delete() end}.
+t_010_test_() -> {timeout, 10, fun() -> select_no_continuation() end}.
+t_011_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
+t_012_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
+t_013_test_() -> {timeout, 10, fun() -> check_field_types() end}.
+t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
     {ok, _ClusterFile} = init_test_cluster_int([]),
@@ -37,6 +40,14 @@ create_and_clear_table() ->
     Ok = mfdb:create_table(test_a, [{record, ?TEST_A}]),
     Ok = mfdb:clear_table(test_a),
     ?assertEqual(ok, Ok).
+
+list_tables() ->
+    ok = mfdb:create_table(test_b, [{record, ?TEST_B}]),
+    {ok, Tabs} = mfdb:table_list(),
+    ?assertEqual([test_a, test_b], Tabs),
+    ok = mfdb:delete_table(test_b),
+    ?assertEqual({error,not_connected}, mfdb:table_info(test_b, all)),
+    ?assertEqual({error,no_such_table}, mfdb:connect(test_b)).
 
 basic_insert() ->
     [mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) || X <- lists:seq(1, 50)],

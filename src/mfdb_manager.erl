@@ -95,10 +95,22 @@ handle_call({delete_table, Tab0}, _From, S) ->
     R = delete_table_(atom_to_binary(Tab0)),
     {reply, R, S};
 handle_call({create_table, Table, Options}, _From, S) ->
-    {record, Record} = lists:keyfind(record, 1, Options),
-    {ok, Indexes} = indexes_(Options),
-    {ok, Ttl} = ttl_(Options),
-    R = create_table_(atom_to_binary(Table), Record, Indexes, Ttl),
+    R = case lists:keyfind(record, 1, Options) of
+            {record, Record} ->
+                case indexes_(Options) of
+                    {ok, Indexes} ->
+                        case ttl_(Options, Record) of
+                            {ok, Ttl} ->
+                                create_table_(atom_to_binary(Table), Record, Indexes, Ttl);
+                            TtlErr ->
+                                TtlErr
+                        end;
+                    IdxErr ->
+                        IdxErr
+                end;
+            false ->
+                {error, missing_record_definition}
+        end,
     {reply, R, S};
 handle_call(table_list, _From, S) ->
     [#conn{key = Key} = Conn] = ets:lookup(?MODULE, conn),
@@ -140,17 +152,47 @@ indexes_(Options) ->
             {ok, Indexes0}
     end.
 
-ttl_(Options) ->
-    case lists:keyfind(ttl, 1, Options) of
-        false ->
+ttl_(Options, {_, Fields}) ->
+    MaxFieldIdx = length(Fields) + 1,
+    FieldTtl =
+        case proplists:get_value(field_ttl, Options, undefined) of
+            TtlFieldPos when
+                  is_integer(TtlFieldPos) andalso
+                  TtlFieldPos > 2 andalso
+                  TtlFieldPos =< MaxFieldIdx ->
+                %% Make sure field at position X is typed as a datetime
+                case lists:nth(TtlFieldPos - 1, Fields) of
+                    {_FName, datetime} ->
+                        TtlFieldPos;
+                    _ ->
+                        invalid_ttl
+                end;
+            undefined ->
+                undefined;
+            _ ->
+                invalid_ttl
+        end,
+    TableTtl =
+        case proplists:get_value(table_ttl, Options, undefined) of
+            undefined ->
+                undefined;
+            {minutes, T} = Ttl0 when is_integer(T) ->
+                Ttl0;
+            {hours, T} = Ttl0 when is_integer(T) ->
+                Ttl0;
+            {days, T} = Ttl0 when is_integer(T) ->
+                Ttl0;
+            _ ->
+                invalid_ttl
+        end,
+    case {TableTtl, FieldTtl} of
+        {undefined, undefined} ->
             {ok, undefined};
-        {ttl, {minutes, _} = Ttl0} ->
-            {ok, Ttl0};
-        {ttl, {hours, _} = Ttl0} ->
-            {ok, Ttl0};
-        {ttl, {days, _} = Ttl0} ->
-            {ok, Ttl0};
-        _ ->
+        {undefined, FieldTtl} when FieldTtl =/= invalid_ttl ->
+            {ok, {field, FieldTtl}};
+        {TableTtl, undefined} when TableTtl =/= invalid_ttl ->
+            {ok, {table, TableTtl}};
+        {_, _} ->
             {error, invalid_ttl}
     end.
 

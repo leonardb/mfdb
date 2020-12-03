@@ -75,7 +75,12 @@ connect(Table) when is_atom(Table) ->
     gen_server:call(mfdb_manager, {connect, Table}).
 
 %% @doc
-%% Create a new table if it does not exist
+%% Create a new table if it does not exist.
+%% Options:
+%%  - record: Record defines the record name and fields. Fields may be typed
+%%  - indexes: Which fields, by position, to keep indexes for
+%%  - table_ttl: Defines a TTL value for every record in the table. TTLs are set on insert
+%%  - field_ttl: Uses a field of the record expiring records. The field must be typed as 'datetime'. Value is treated as a UTC timestamp
 %% @end
 -spec create_table(Table :: table_name(), Options :: options()) -> ok | {error, any()}.
 create_table(Table, Options) when is_atom(Table) ->
@@ -427,13 +432,14 @@ key_unsubscribe_(From, Prefix, Key) ->
 %% @private
 reap_expired_(Table) ->
     #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
-    case mfdb_lib:expired(Ttl) of
-        never ->
+    case Ttl of
+        undefined ->
             %% No expiration
             ok;
-        Expired ->
+        _ ->
+            Now = erlang:universaltime(),
             RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
-            RangeEnd = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Expired, ?FDB_END}),
+            RangeEnd = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END}),
             reap_expired_(St, RangeStart, RangeEnd)
     end.
 

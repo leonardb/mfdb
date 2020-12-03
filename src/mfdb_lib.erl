@@ -33,8 +33,7 @@
          set_counter/4,
          validate_reply_/1,
          unixtime/0,
-         unixminute/0,
-         expired/1,
+         expires/1,
          sort/1,
          sort/2]).
 
@@ -97,6 +96,7 @@ sort(L) ->
 put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
     %%Tx = erlfdb:create_transaction(Db),
     %% Operation is on a data table
+    TtlValue = ttl_val_(Ttl, Record),
     erlfdb:transactional(
       Db,
       fun(Tx) ->
@@ -145,13 +145,13 @@ put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl =
                       %% Update the count of stored records
                       ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
                       %% Create/update any TTLs
-                      ok = ttl_add(Tx, TabPfx, Ttl, PkValue);
+                      ok = ttl_add(Tx, TabPfx, TtlValue, PkValue);
                   %% and finally commit the changes
                   %%ok = erlfdb:wait(erlfdb:commit(Tx));
                   false ->
                       put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
                       %% Update any TTLs
-                      ok = ttl_add(Tx, TabPfx, Ttl, PkValue)
+                      ok = ttl_add(Tx, TabPfx, TtlValue, PkValue)
                       %%ok = erlfdb:wait(erlfdb:commit(Tx))
               end
       end).
@@ -164,36 +164,45 @@ put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)
 put_(Tx, _TabPfx, _HcaRef, Size, EncKey, Size, EncRecord) ->
     ok = erlfdb:wait(erlfdb:set(Tx, EncKey, <<Size:32, EncRecord/binary>>)).
 
-ttl_add(_Tx, _TabPfx, undefined, _Key) ->
+ttl_val_(Ttl, Record) ->
+    case Ttl of
+        {field, TtlField} ->
+            element(TtlField, Record);
+        {table, TtlVal} ->
+            expires(TtlVal);
+        undefined ->
+            never
+    end.
+
+ttl_add(_Tx, _TabPfx, never, _Key) ->
     ok;
-ttl_add(?IS_DB = Db, TabPfx, TTL, Key) ->
+ttl_add(?IS_DB = Db, TabPfx, TtlDatetime, Key) ->
     Tx = erlfdb:create_transaction(Db),
-    ok = ttl_add(Tx, TabPfx, TTL, Key),
+    ok = ttl_add(Tx, TabPfx, TtlDatetime, Key),
     erlfdb:wait(erlfdb:commit(Tx));
-ttl_add(?IS_TX = Tx, TabPfx, TTL, Key) ->
+ttl_add(?IS_TX = Tx, TabPfx, TtlDatetime0, Key) ->
     %% We need to be able to lookup in both directions
     %% since we use a range query for reaping expired records
     %% and we also need to remove the previous entry if a record gets updated
-    ok = ttl_remove(Tx, TabPfx, TTL, Key),
-    Now = unixminute(), %% aligned to current minute + 1 minute
-    erlfdb:wait(erlfdb:set(Tx, encode_key(TabPfx, {?TTL_TO_KEY_PFX, Now, Key}), <<>>)),
-    erlfdb:wait(erlfdb:set(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}), integer_to_binary(Now, 10))).
+    ok = ttl_remove(Tx, TabPfx, TtlDatetime0, Key),
+    TTLDatetime = ttl_minute(TtlDatetime0), %% aligned to current minute + 1 minute
+    erlfdb:wait(erlfdb:set(Tx, encode_key(TabPfx, {?TTL_TO_KEY_PFX, TTLDatetime, Key}), <<>>)),
+    erlfdb:wait(erlfdb:set(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}), sext:encode(TTLDatetime))).
 
 ttl_remove(_Tx, _TabPfx, undefined, _Key) ->
     ok;
-ttl_remove(?IS_DB = Db, TabPfx, TTL, Key) ->
+ttl_remove(?IS_DB = Db, TabPfx, TtlDatetime, Key) ->
     Tx = erlfdb:create_transaction(Db),
-    ok = ttl_remove(Tx, TabPfx, TTL, Key),
+    ok = ttl_remove(Tx, TabPfx, TtlDatetime, Key),
     erlfdb:wait(erlfdb:commit(Tx));
-ttl_remove(?IS_TX = Tx, TabPfx, _TTL, Key) ->
+ttl_remove(?IS_TX = Tx, TabPfx, _TtlDatetime, Key) ->
     TtlK2T = encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}),
     case erlfdb:wait(erlfdb:get(Tx, TtlK2T)) of
         not_found ->
             ok;
-        Added ->
-            OldTtlT2K = {?TTL_TO_KEY_PFX, binary_to_integer(Added, 10), Key},
+        TtlDatetime ->
+            OldTtlT2K = {?TTL_TO_KEY_PFX, sext:decode(TtlDatetime), Key},
             erlfdb:wait(erlfdb:clear(Tx, encode_key(TabPfx, OldTtlT2K)))
-
     end,
     erlfdb:wait(erlfdb:clear(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}))).
 
@@ -603,10 +612,12 @@ validate_reply_(_) ->
 unixtime() ->
     datetime_to_unix(erlang:universaltime()).
 
-unixminute() ->
-    {D, {H, M, _S}} = erlang:universaltime(),
+ttl_minute({{_, _, _} = D, {H, M, _}}) ->
     %% Ensure 'at least' a minute
-    datetime_to_unix({D, {H, M, 0}}) + 60.
+    unix_to_datetime(datetime_to_unix({D, {H, M, 0}}) + 60).
+
+unix_to_datetime(Int) ->
+    calendar:gregorian_seconds_to_datetime(?SECONDS_TO_EPOCH + Int).
 
 datetime_to_unix({Mega, Secs, _}) ->
     (Mega * 1000000) + Secs;
@@ -621,18 +632,18 @@ sort(RecName, [T | _] = L) when is_tuple(T) andalso element(1, T) =:= RecName ->
 sort(_RecName, L) ->
     lists:sort(L).
 
--spec expired(undefined | ttl()) -> never | integer().
-expired(undefined) ->
+-spec expires(undefined | ttl()) -> never | integer().
+expires(undefined) ->
     never; %% never expires
-expired({minutes, X}) ->
+expires({minutes, X}) ->
     Exp = X * 60,
     {D, {H, M, _S}} = erlang:universaltime(),
-    datetime_to_unix({D, {H, M, 0}}) - Exp;
-expired({hours, X}) ->
+    unix_to_datetime(datetime_to_unix({D, {H, M, 0}}) + Exp);
+expires({hours, X}) ->
     Exp = X * 60 * 60,
     {D, {H, M, _S}} = erlang:universaltime(),
-    datetime_to_unix({D, {H, M, 0}}) - Exp;
-expired({days, X}) ->
+    unix_to_datetime(datetime_to_unix({D, {H, M, 0}}) + Exp);
+expires({days, X}) ->
     Exp = X * 60 * 60 * 24,
     {D, {H, M, _S}} = erlang:universaltime(),
-    datetime_to_unix({D, {H, M, 0}}) - Exp.
+    unix_to_datetime(datetime_to_unix({D, {H, M, 0}}) + Exp).

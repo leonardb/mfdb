@@ -72,7 +72,7 @@
 -type mfdbrecord()  :: {atom(), fields()}.
 -type continuation() :: function().
 
--type option() :: {record, mfdbrecord()} | {indexes, indexes()} | {ttl, ttl()}.
+-type option() :: {record, mfdbrecord()} | {indexes, indexes()} | {table_ttl, ttl()} | {field_ttl, index()}.
 -type options() :: list(option()).
 
 -type watcher_callback() :: {callback, atom(), atom()}.

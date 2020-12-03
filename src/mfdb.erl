@@ -121,7 +121,10 @@ table_info(Table, InfoOpt)
   when is_atom(Table) andalso
        (InfoOpt =:= all orelse
         InfoOpt =:= size orelse
-        InfoOpt =:= count) ->
+        InfoOpt =:= count orelse
+        InfoOpt =:= fields orelse
+        InfoOpt =:= indexes orelse
+        InfoOpt =:= ttl) ->
     try gen_server:call(?TABPROC(Table), {table_info, InfoOpt})
     catch
         exit:{noproc, _}:_Stack ->
@@ -310,10 +313,23 @@ handle_call({import, SourceFile}, From, #{table := Table} = State) ->
     NewWaiters = [{ImportId, Pid, Ref, From} | OldWaiters],
     {noreply, State#{waiters => NewWaiters}};
 handle_call({table_info, all}, _From, #{table := Table} = State) ->
-    #st{} = St = mfdb_manager:st(Table),
+    #st{fields = Fields, index = Index, ttl = Ttl0} = St = mfdb_manager:st(Table),
     Count = mfdb_lib:table_count(St),
     Size = mfdb_lib:table_data_size(St),
-    {reply, {ok, [{count, Count}, {size, Size}]}, State};
+    Indexes = [P || #idx{pos = P} <- tuple_to_list(Index)],
+    All0 = [{count, Count},
+            {size, Size},
+            {fields, Fields},
+            {indexes, Indexes}],
+    All = case Ttl0 of
+              {field, Pos} ->
+                  [{field_ttl, Pos} | All0];
+              {table, T} ->
+                  [{table_ttl, T} | All0];
+              undefined ->
+                  All0
+          end,
+    {reply, {ok, All}, State};
 handle_call({table_info, count}, _From, #{table := Table} = State) ->
     #st{} = St = mfdb_manager:st(Table),
     Count = mfdb_lib:table_count(St),
@@ -322,6 +338,24 @@ handle_call({table_info, size}, _From, #{table := Table} = State) ->
     #st{} = St = mfdb_manager:st(Table),
     Size = mfdb_lib:table_data_size(St),
     {reply, {ok, Size}, State};
+handle_call({table_info, fields}, _From, #{table := Table} = State) ->
+    #st{fields = Fields} = mfdb_manager:st(Table),
+    {reply, {ok, Fields}, State};
+handle_call({table_info, indexes}, _From, #{table := Table} = State) ->
+    #st{index = Index} = mfdb_manager:st(Table),
+    Indexes = [P || #idx{pos = P} <- tuple_to_list(Index)],
+    {reply, {ok, Indexes}, State};
+handle_call({table_info, ttl}, _From, #{table := Table} = State) ->
+    #st{ttl = Ttl0} = mfdb_manager:st(Table),
+    Ttl = case Ttl0 of
+              {field, Pos} ->
+                  {field_ttl, Pos};
+              {table, T} ->
+                  {table_ttl, T};
+              undefined ->
+                  no_ttl
+          end,
+    {reply, {ok, Ttl}, State};
 handle_call({subscribe, ReplyType, Key}, From, #{table := Table} = State) ->
     #st{pfx = TblPfx, tab = Tab} = mfdb_manager:st(Table),
     Reply = key_subscribe_(Tab, ReplyType, From, TblPfx, Key),

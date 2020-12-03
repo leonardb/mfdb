@@ -194,14 +194,18 @@ index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
 %% @doc insert/replace a record. Types of values are checked if table has typed fields.
 -spec insert(Table :: table_name(), ObjectTuple :: tuple()) -> ok | {error, any()}.
 insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
-    #st{record_name = RecName, fields = Fields, index = Index} = St = mfdb_manager:st(Table),
+    #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+    TtlPos = case Ttl of
+                 {field, Pos} -> Pos;
+                 _ -> -1
+             end,
     IndexList = tl(tuple_to_list(Index)),
     ExpectLength = length(Fields) + 1,
     TypeCheckFun = case lists:all(fun(F) -> is_atom(F) end, Fields) of
                        true ->
-                           fun(_,_) -> true end;
+                           fun(_,_,_) -> true end;
                        false ->
-                           fun mfdb_lib:check_field_types/2
+                           fun mfdb_lib:check_field_types/3
                    end,
     IndexCheckFun = case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
                         true ->
@@ -215,7 +219,7 @@ insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
     Expect = {RecName, ExpectLength},
     %% Functions must return 'true' to continue, anything else will exit early
     Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
-            {TypeCheckFun, [ObjectList, Fields]},
+            {TypeCheckFun, [ObjectList, Fields, TtlPos]},
             {IndexCheckFun, [ObjectList, IndexList]},
             {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
     mfdb_lib:flow(Flow, true).
@@ -236,12 +240,12 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
 -spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any()) ->  any().
 fold(Table, InnerFun, OuterAcc) ->
     MatchSpec = [{'_',[],['$_']}],
-    fold_cont_(select(Table, MatchSpec), InnerFun, OuterAcc).
+    fold_cont_(select_(Table, MatchSpec, 50), InnerFun, OuterAcc).
 
 %% @doc Applies a function to all records in the table matching the MatchSpec
 -spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) ->  any().
 fold(Table, InnerFun, OuterAcc, MatchSpec) ->
-    fold_cont_(select(Table, MatchSpec), InnerFun, OuterAcc).
+    fold_cont_(select_(Table, MatchSpec, 50), InnerFun, OuterAcc).
 
 %% @doc Delete a record from the table
 -spec delete(Table :: table_name(), PkVal :: any()) ->  ok.
@@ -597,6 +601,17 @@ ms_rewrite(HP, Guards) when is_tuple(HP) ->
                       _ ->
                           {Inc + 1, U, [{Inc, M} | Acc]}
                   end;
+             (Ms, {Inc, U, Acc}) when is_tuple(Ms) ->
+                  Used = lists:foldl(
+                           fun(M, UAcc) ->
+                                   case atom_to_binary(M, utf8) of
+                                       <<"\$", _/binary>> ->
+                                           [M | UAcc];
+                                       _ ->
+                                           UAcc
+                                   end
+                           end, U, tuple_to_list(Ms)),
+                  {Inc + 1, Used, Acc};
              (Match, {Inc, U, Acc}) ->
                   {Inc + 1, U, [{Inc, Match} | Acc]}
           end,
@@ -636,18 +651,44 @@ range_guards([{Comp, Bind, Val} | Rest], Binds, Indexes, Acc) ->
                     case Idx =:= 2 orelse lists:keyfind(Idx, #idx.pos, Indexes) of
                         true ->
                             %% Column indexed
-                            range_guards(Rest, Binds, Indexes, [{Idx, Comp, Val} | Acc]);
+                            range_guards(Rest, Binds, Indexes, [{Idx, Comp, guard_val(Val)} | Acc]);
                         false ->
                             %% Column not indexed
                             range_guards(Rest, Binds, Indexes, Acc);
                         #idx{} ->
-                            range_guards(Rest, Binds, Indexes, [{Idx, Comp, Val} | Acc])
+                            range_guards(Rest, Binds, Indexes, [{Idx, Comp, guard_val(Val)} | Acc])
                     end
             end;
         false ->
             range_guards(Rest, Binds, Indexes, Acc)
     end.
 
+%% When tuples are used in the matchspec guards each tuple is wrapped in a tuple
+%% There's probably a better way to handle the unwrapping
+guard_val({ { { {Y, Mn, D} }, { { H, Mi, S} } } })
+  when is_integer(Y) andalso
+       is_integer(Mn) andalso
+       is_integer(D) andalso
+       is_integer(H) andalso
+       is_integer(Mi) andalso
+       is_number(S) ->
+    %% curly-escaped Datetime
+    {{Y, Mn, D}, { H, Mi, S}};
+guard_val({ {W, X, Y, Z} })
+  when is_integer(W) andalso
+       is_integer(X) andalso
+       is_integer(Y) andalso
+       is_integer(Z) ->
+    %% curly-escaped erlang ipv4
+    {W, X, Y, Z};
+guard_val({ {X, Y, Z} })
+  when is_integer(X) andalso
+       is_integer(Y) andalso
+       is_integer(Z) ->
+    %% curly-escaped erlang timestamp
+    {X, Y, Z};
+guard_val(Other) ->
+    Other.
 
 %% @private
 primary_table_range_(Guards) ->
@@ -1200,14 +1241,18 @@ rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
 %% @doc The do_import is based off of the file:consult/1 code which reads in terms from a file
 %% @private
 do_import_(Table, SourceFile, ImportId) ->
-    #st{record_name = RecName, fields = Fields, index = Index} = St = mfdb_manager:st(Table),
+    #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+    TtlPos = case Ttl of
+                 {field, Pos} -> Pos;
+                 _ -> -1
+             end,
     IndexList = tl(tuple_to_list(Index)),
     ExpectLength = length(Fields) + 1,
     TypeCheckFun = case lists:all(fun(F) -> is_atom(F) end, Fields) of
                        true ->
-                           fun(_,_) -> true end;
+                           fun(_,_,_) -> true end;
                        false ->
-                           fun mfdb_lib:check_field_types/2
+                           fun mfdb_lib:check_field_types/3
                    end,
     IndexCheckFun = case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
                         true ->
@@ -1223,7 +1268,7 @@ do_import_(Table, SourceFile, ImportId) ->
                 Expect = {RecName, ExpectLength},
                 %% Functions must return 'true' to continue, anything else will exit early
                 Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
-                        {TypeCheckFun, [ObjectList, Fields]},
+                        {TypeCheckFun, [ObjectList, Fields, TtlPos]},
                         {IndexCheckFun, [ObjectList, IndexList]},
                         {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
                 try mfdb_lib:flow(Flow, true) of

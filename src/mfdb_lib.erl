@@ -35,14 +35,15 @@
          unixtime/0,
          expires/1,
          sort/1,
-         sort/2]).
+         sort/2,
+         prefix_to_range/1]).
 
 -export([clear_table/3]).
 
 -export([flow/2,
          validate_record/1,
          validate_indexes/2,
-         check_field_types/2,
+         check_field_types/3,
          check_index_sizes/2]).
 
 -include("mfdb.hrl").
@@ -470,14 +471,32 @@ validate_fields_([{Name, Types} | Rest])
 validate_fields_([H | _]) ->
     {error, invalid_record_field, H}.
 
-check_field_types([], []) ->
+check_field_types(Values, Fields, TtlPos) ->
+    %% count starts at 2 for fields
+    check_field_types(Values, Fields, TtlPos, 2).
+
+
+check_field_types([], [], _, _) ->
     true;
-check_field_types([_Val | RestVal], [Field | RestFields]) when is_atom(Field) ->
-    check_field_types(RestVal, RestFields);
-check_field_types([Val | RestVal], [{Field, Type} | RestFields]) ->
+check_field_types([_Val | RestVal], [Field | RestFields], TtlPos, FPos) when is_atom(Field) ->
+    check_field_types(RestVal, RestFields, TtlPos, FPos + 1);
+check_field_types([Val | RestVal], [{Field, datetime = Type} | RestFields], TtlPos, TtlPos) ->
+    %% Special case to allow 'never' on a ttl datetime field
+    case Val =:= never of
+        true ->
+            check_field_types(RestVal, RestFields, TtlPos, TtlPos + 1);
+        false ->
+            case type_check_(Val, Type) of
+                true ->
+                    check_field_types(RestVal, RestFields, TtlPos, TtlPos + 1);
+                false ->
+                    {error, {Field, Val, list_to_atom("not_a_" ++ atom_to_list(Type))}}
+            end
+    end;
+check_field_types([Val | RestVal], [{Field, Type} | RestFields], TtlPos, FPos) ->
     case type_check_(Val, Type) of
         true ->
-            check_field_types(RestVal, RestFields);
+            check_field_types(RestVal, RestFields, TtlPos, FPos + 1);
         false ->
             {error, {Field, Val, list_to_atom("not_a_" ++ atom_to_list(Type))}}
     end.
@@ -686,3 +705,7 @@ i2s({minutes, M}) -> (M * 60);
 i2s({hours, H}) -> (H * 60 * 60);
 i2s({days, D}) -> (D * 86400);
 i2s(_) -> {error, invalid_expires}.
+
+prefix_to_range(Prefix) ->
+    EndKey = erlfdb_key:strinc(Prefix),
+    {Prefix, EndKey}.

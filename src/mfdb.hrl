@@ -61,7 +61,8 @@
 
 -define(TABPROC(Table), {via, gproc, {n, l, {mfdb, Table}}}).
 
--type ttl()         :: {minutes | hours | days, pos_integer()}.
+-type ttl()         :: {minutes | hours | days | unix, pos_integer()}.
+-type ttls()        :: list(ttl()).
 -type table_name()  :: atom().
 -type field_name()  :: atom().
 -type field_type()  :: binary | integer | float | list | tuple | date | datetime | time | inet | inet4 | inet6 | atom | any | term | undefined | null.

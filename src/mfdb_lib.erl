@@ -632,18 +632,57 @@ sort(RecName, [T | _] = L) when is_tuple(T) andalso element(1, T) =:= RecName ->
 sort(_RecName, L) ->
     lists:sort(L).
 
--spec expires(undefined | ttl()) -> never | integer().
+-spec expires(never | undefined | ttls() | ttl()) -> never | calendar:datetime().
 expires(undefined) ->
-    never; %% never expires
-expires({minutes, X}) ->
-    Exp = X * 60,
-    {D, {H, M, _S}} = erlang:universaltime(),
-    unix_to_datetime(datetime_to_unix({D, {H, M, 0}}) + Exp);
-expires({hours, X}) ->
-    Exp = X * 60 * 60,
-    {D, {H, M, _S}} = erlang:universaltime(),
-    unix_to_datetime(datetime_to_unix({D, {H, M, 0}}) + Exp);
-expires({days, X}) ->
-    Exp = X * 60 * 60 * 24,
-    {D, {H, M, _S}} = erlang:universaltime(),
-    unix_to_datetime(datetime_to_unix({D, {H, M, 0}}) + Exp).
+    %% never expires
+    never;
+expires(never) ->
+    %% never expires
+    never;
+expires({unix, X}) ->
+    {D, {H, M, _S}} = unix_to_datetime(X),
+    {D, {H, M, 0}};
+expires({_, _, _} = V) ->
+    %% erlang timestamp
+    {D, {H, M, _S}} = unix_to_datetime(datetime_to_unix(V)),
+    {D, {H, M, 0}};
+expires({{_, _, _} = D, {H, M, _}}) ->
+    %% datetime
+    {D, {H, M, 0}};
+expires(E) when is_list(E) ->
+    %% we're assuming a list of time intervals
+    case lists:foldl(fun(_, {error, _} = Err) ->
+                             Err;
+                        (V, Acc) ->
+                             case i2s(V) of
+                                 {error, _} = Err ->
+                                     Err;
+                                 S ->
+                                     S + Acc
+                             end
+                     end, 0, E) of
+        {error, _} = Error ->
+            Error;
+        Secs ->
+            {D, {H, M, _S}} = unix_to_datetime(unixtime() + Secs),
+            {D, {H, M, 0}}
+    end;
+expires({Period, Inc} = P)
+  when (Period =:= minutes orelse
+        Period =:= hours orelse
+        Period =:= days) andalso
+       is_integer(Inc) ->
+    case i2s(P) of
+        X when is_integer(X) ->
+            {D, {H, M, _S}} = unix_to_datetime(unixtime() + X),
+            {D, {H, M, 0}};
+        Err ->
+            throw(Err)
+    end;
+expires(_) ->
+    throw(invalid_expires).
+
+i2s({minutes, M}) -> (M * 60);
+i2s({hours, H}) -> (H * 60 * 60);
+i2s({days, D}) -> (D * 86400);
+i2s(_) -> {error, invalid_expires}.

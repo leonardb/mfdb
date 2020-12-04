@@ -274,7 +274,7 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
 %%       end
 %%    end
 %% @end
--spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any()) ->  any().
+-spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any()) -> {error, atom(), any()} | {ok, any()}.
 fold(Table, InnerFun, OuterAcc) ->
     MatchSpec = [{'_',[],['$_']}],
     St0 = mfdb_manager:st(Table),
@@ -296,7 +296,7 @@ fold(Table, InnerFun, OuterAcc) ->
 %%       end
 %%    end
 %% @end
--spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) ->  any().
+-spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) -> {error, atom(), any()} | {ok, any()}.
 fold(Table, InnerFun, OuterAcc, MatchSpec) ->
     St0 = mfdb_manager:st(Table),
     St = St0#st{write_lock = true},
@@ -602,11 +602,11 @@ select_(#st{index = Indexes0} = St, Matchspec0, Limit, DataFun, DataAcc) ->
 fold_cont_({error, _Err, _Acc} = Res) ->
     Res;
 fold_cont_({ok, [], '$end_of_table'}) ->
-    [];
+    {ok, []};
 fold_cont_({ok, Data, '$end_of_table'}) when is_list(Data) ->
-    lists:sort(Data);
+    {ok, lists:sort(Data)};
 fold_cont_({ok, Data, '$end_of_table'}) ->
-    Data;
+    {ok, Data};
 fold_cont_({ok, Data, Cont}) when is_function(Cont, 1) ->
     fold_cont_(Cont(Data)).
 

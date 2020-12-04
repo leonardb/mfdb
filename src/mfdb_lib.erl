@@ -46,6 +46,9 @@
          check_field_types/3,
          check_index_sizes/2]).
 
+-export([mk_tx/1,
+         fdb_err/1]).
+
 -include("mfdb.hrl").
 
 -define(SECONDS_TO_EPOCH, (719528*24*3600)).
@@ -95,67 +98,68 @@ sort(L) ->
 %% in order to reduce the load potentially added by indexes
 %% @end
 put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
-    %%Tx = erlfdb:create_transaction(Db),
-    %% Operation is on a data table
+    erlfdb:transactional(Db, put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record));
+put(#st{db = ?IS_TX = Tx, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
+    erlfdb:transactional(Tx, put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record)).
+
+put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
     TtlValue = ttl_val_(Ttl, Record),
-    erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
-              EncRecord = term_to_binary(Record),
-              Size = byte_size(EncRecord),
-              {DoSave, SizeInc, CountInc} =
-                  case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
-                      <<"mfdb_ref", OldSize:32, OldMfdbRefPartId/binary>> ->
-                          %% Remove any index values that may exist
-                          OldEncRecord = parts_value_(OldMfdbRefPartId, TabPfx, Tx),
-                          %% Has something in the record changed?
-                          RecordChanged = OldEncRecord =/= EncRecord,
-                          case RecordChanged of
-                              true ->
-                                  %% Remove any old index pointers
-                                  ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
-                                  %% Replacing entry, increment by size diff
-                                  {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(OldMfdbRefPartId),
-                                  Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
-                                  ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Start)),
-                                  %% Replacing entry, only changes the size
-                                  {true, ((OldSize * -1) + Size), 0};
-                              false ->
-                                  {false, 0, 0}
-                          end;
-                      <<OldSize:32, OldEncRecord/binary>> when OldEncRecord =/= EncRecord ->
-                          %% Record exists, but has changed
-                          %% Remove any old index pointers
-                          ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
-                          %% Replacing entry, only changes the size
-                          {true, ((OldSize * -1) + Size), 0};
-                      <<_OldSize:32, OldEncRecord/binary>> when OldEncRecord =:= EncRecord ->
-                          %% Record already exists and is unchanged
-                          {false, 0, 0};
-                      not_found ->
-                          %% New entry, so increase count and add size
-                          {true, Size, 1}
-                  end,
-              case DoSave of
-                  true ->
-                      put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
-                      ok = create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes),
-                      %% Update the 'size' of stored data
-                      ok = inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc),
-                      %% Update the count of stored records
-                      ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
-                      %% Create/update any TTLs
-                      ok = ttl_add(Tx, TabPfx, TtlValue, PkValue);
-                  %% and finally commit the changes
-                  %%ok = erlfdb:wait(erlfdb:commit(Tx));
-                  false ->
-                      put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
-                      %% Update any TTLs
-                      ok = ttl_add(Tx, TabPfx, TtlValue, PkValue)
-                      %%ok = erlfdb:wait(erlfdb:commit(Tx))
-              end
-      end).
+    fun(Tx) ->
+            EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
+            EncRecord = term_to_binary(Record),
+            Size = byte_size(EncRecord),
+            {DoSave, SizeInc, CountInc} =
+                case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+                    <<"mfdb_ref", OldSize:32, OldMfdbRefPartId/binary>> ->
+                        %% Remove any index values that may exist
+                        OldEncRecord = parts_value_(OldMfdbRefPartId, TabPfx, Tx),
+                        %% Has something in the record changed?
+                        RecordChanged = OldEncRecord =/= EncRecord,
+                        case RecordChanged of
+                            true ->
+                                %% Remove any old index pointers
+                                ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
+                                %% Replacing entry, increment by size diff
+                                {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(OldMfdbRefPartId),
+                                Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
+                                ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Start)),
+                                %% Replacing entry, only changes the size
+                                {true, ((OldSize * -1) + Size), 0};
+                            false ->
+                                {false, 0, 0}
+                        end;
+                    <<OldSize:32, OldEncRecord/binary>> when OldEncRecord =/= EncRecord ->
+                        %% Record exists, but has changed
+                        %% Remove any old index pointers
+                        ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
+                        %% Replacing entry, only changes the size
+                        {true, ((OldSize * -1) + Size), 0};
+                    <<_OldSize:32, OldEncRecord/binary>> when OldEncRecord =:= EncRecord ->
+                        %% Record already exists and is unchanged
+                        {false, 0, 0};
+                    not_found ->
+                        %% New entry, so increase count and add size
+                        {true, Size, 1}
+                end,
+            case DoSave of
+                true ->
+                    put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
+                    ok = create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes),
+                    %% Update the 'size' of stored data
+                    ok = inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc),
+                    %% Update the count of stored records
+                    ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
+                    %% Create/update any TTLs
+                    ok = ttl_add(Tx, TabPfx, TtlValue, PkValue);
+                %% and finally commit the changes
+                %%ok = erlfdb:wait(erlfdb:commit(Tx));
+                false ->
+                    put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
+                    %% Update any TTLs
+                    ok = ttl_add(Tx, TabPfx, TtlValue, PkValue)
+                    %%ok = erlfdb:wait(erlfdb:commit(Tx))
+            end
+    end.
 
 put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)
   when Size > ?MAX_VALUE_SIZE ->
@@ -239,11 +243,18 @@ parts_value_(MfdbRefPartId, TabPfx, Tx) ->
     Parts = erlfdb:wait(erlfdb:get_range_startswith(Tx, Start)),
     bin_join_parts(Parts).
 
-delete(#st{db = ?IS_DB = Db} = St, PkValue) ->
+mk_tx(#st{db = ?IS_DB = Db, write_lock = false} = St) ->
+    FdbTx = erlfdb:create_transaction(Db),
+    St#st{db = FdbTx};
+mk_tx(#st{db = ?IS_DB = Db, write_lock = true} = St) ->
+    FdbTx = erlfdb:create_transaction(Db),
+    St#st{db = FdbTx}.
+
+delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
     %% deleting a data item
-    Tx = erlfdb:create_transaction(Db),
-    ok = delete(St#st{db = Tx}, PkValue),
-    erlfdb:wait(erlfdb:commit(Tx));
+    #st{db = FdbTx} = NewSt = mk_tx(OldSt),
+    ok = delete(NewSt, PkValue),
+    erlfdb:wait(erlfdb:commit(FdbTx));
 delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
     %% deleting a data item
     EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
@@ -709,3 +720,73 @@ i2s(_) -> {error, invalid_expires}.
 prefix_to_range(Prefix) ->
     EndKey = erlfdb_key:strinc(Prefix),
     {Prefix, EndKey}.
+
+fdb_err(0) -> success;
+fdb_err(1000) -> operation_failed;
+fdb_err(1004) -> timed_out;
+fdb_err(1007) -> transaction_too_old;
+fdb_err(1009) -> future_version;
+fdb_err(1020) -> not_committed;
+fdb_err(1021) -> commit_unknown_result;
+fdb_err(1025) -> transaction_cancelled;
+fdb_err(1031) -> transaction_timed_out;
+fdb_err(1032) -> too_many_watches;
+fdb_err(1034) -> watches_disabled;
+fdb_err(1036) -> accessed_unreadable;
+fdb_err(1037) -> process_behind;
+fdb_err(1038) -> database_locked;
+fdb_err(1039) -> cluster_version_changed;
+fdb_err(1040) -> external_client_already_loaded;
+fdb_err(1042) -> proxy_memory_limit_exceeded;
+fdb_err(1101) -> operation_cancelled;
+fdb_err(1102) -> future_released;
+fdb_err(1500) -> platform_error;
+fdb_err(1501) -> large_alloc_failed;
+fdb_err(1502) -> performance_counter_error;
+fdb_err(1510) -> io_error;
+fdb_err(1511) -> file_not_found;
+fdb_err(1512) -> bind_failed;
+fdb_err(1513) -> file_not_readable;
+fdb_err(1514) -> file_not_writable;
+fdb_err(1515) -> no_cluster_file_found;
+fdb_err(1516) -> file_too_large;
+fdb_err(2000) -> client_invalid_operation;
+fdb_err(2002) -> commit_read_incomplete;
+fdb_err(2003) -> test_specification_invalid;
+fdb_err(2004) -> key_outside_legal_range;
+fdb_err(2005) -> inverted_range;
+fdb_err(2006) -> invalid_option_value;
+fdb_err(2007) -> invalid_option;
+fdb_err(2008) -> network_not_setup;
+fdb_err(2009) -> network_already_setup;
+fdb_err(2010) -> read_version_already_set;
+fdb_err(2011) -> version_invalid;
+fdb_err(2012) -> range_limits_invalid;
+fdb_err(2013) -> invalid_database_name;
+fdb_err(2014) -> attribute_not_found;
+fdb_err(2015) -> future_not_set;
+fdb_err(2016) -> future_not_error;
+fdb_err(2017) -> used_during_commit;
+fdb_err(2018) -> invalid_mutation_type;
+fdb_err(2020) -> transaction_invalid_version;
+fdb_err(2021) -> no_commit_version;
+fdb_err(2022) -> environment_variable_network_option_failed;
+fdb_err(2023) -> transaction_read_only;
+fdb_err(2024) -> invalid_cache_eviction_policy;
+fdb_err(2026) -> blocked_from_network_thread;
+fdb_err(2100) -> incompatible_protocol_version;
+fdb_err(2101) -> transaction_too_large;
+fdb_err(2102) -> key_too_large;
+fdb_err(2103) -> value_too_large;
+fdb_err(2104) -> connection_string_invalid;
+fdb_err(2105) -> address_in_use;
+fdb_err(2106) -> invalid_local_address;
+fdb_err(2107) -> tls_error;
+fdb_err(2108) -> unsupported_operation;
+fdb_err(2200) -> api_version_unset;
+fdb_err(2201) -> api_version_already_set;
+fdb_err(2202) -> api_version_invalid;
+fdb_err(2203) -> api_version_not_supported;
+fdb_err(2210) -> exact_mode_without_limits;
+fdb_err(4000) -> unknown_error;
+fdb_err(4100) -> internal_error.

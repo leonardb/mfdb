@@ -55,7 +55,7 @@
 -type selector() :: {binary(), gteq | gt | lteq | lt} | {binary(), gteq | gt | lteq | lt, any()}.
 -type idx() :: {atom(), index, {pos_integer(), atom()}}.
 
--type info_opt() :: all | size | count.
+-type info_opt() :: all | size | count | fields | indexes | ttl.
 
 -define(FIELD_TYPES, [binary, integer, float, list, tuple, date, datetime, time, inet, inet4, inet6, atom, any, term, undefined, null]).
 
@@ -112,7 +112,8 @@
          pfx                            :: binary(), %% <<(bit_size(KeyId) + bit_size(TableId) + 16):8, (bit_size(KeyId)):8, KeyId/binary, (bit_size(TableId)):8, TableId/binary>>,
          hca_ref,   %% opaque :: #erlfdb_hca{} record used for mfdb_part() keys    :: erlfdb_hca:create(<<"parts_", TableId/binary>>).
          info           = [],
-         ttl            = undefined     :: undefined | ttl()
+         ttl            = undefined     :: undefined | ttl(),
+         write_lock     = false         :: boolean()
         }).
 
 -record(info, {k, v}).
@@ -136,5 +137,7 @@
          streaming_mode :: atom(),
          iteration :: pos_integer(),
          snapshot :: boolean(),
-         reverse :: 1 | 0
+         reverse :: 1 | 0,
+         write_lock = false :: boolean(),
+         st :: #st{}
         }).

@@ -69,6 +69,11 @@
 -include("mfdb.hrl").
 -define(REAP_POLL_INTERVAL, 500).
 
+-type dbrec() :: tuple().
+-type foldfun() :: fun((tx(), dbrec(), any()) -> any()).
+
+-export_type([dbrec/0, tx/0, foldfun/0]).
+
 %% @doc Starts the management server for a table
 -spec connect(Table :: table_name()) -> ok | {error, no_such_table}.
 connect(Table) when is_atom(Table) ->
@@ -140,12 +145,17 @@ table_list() ->
 %% A mnesia-style select returning a continuation()
 %% Returns are chunked into buckets of 50 results
 %% @end
--spec select(Table :: table_name(), Matchspec :: ets:match_spec()) ->  {[] | list(any()), continuation() | '$end_of_table'}.
+-spec select(Table :: table_name(), Matchspec :: ets:match_spec()) ->  {error, atom()} | {[] | list(any()), continuation() | '$end_of_table'}.
 select(Table, Matchspec) when is_atom(Table) ->
-    select_(Table, Matchspec, 50).
+    case select_(Table, Matchspec, 50) of
+        {error, Err, _} ->
+            {error, Err};
+        {ok, Data, EndOrCont} ->
+            {Data, EndOrCont}
+    end.
 
 %% @doc Select continuation
--spec select(Cont :: continuation()) -> {[] | list(any()), continuation() | '$end_of_table'}.
+-spec select(Cont :: continuation()) -> {error, atom()} | {[] | list(any()), continuation() | '$end_of_table'}.
 select(Cont) ->
     case Cont of
         {_, '$end_of_table'} ->
@@ -155,7 +165,12 @@ select(Cont) ->
         '$end_of_table' ->
             {[], '$end_of_table'};
         Cont when is_function(Cont) ->
-            Cont()
+            case Cont() of
+                {error, Err, _} ->
+                    {error, Err};
+                {ok, Data, EndOrCont} ->
+                    {Data, EndOrCont}
+            end
     end.
 
 %% @private
@@ -192,9 +207,17 @@ index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
     end.
 
 %% @doc insert/replace a record. Types of values are checked if table has typed fields.
--spec insert(Table :: table_name(), ObjectTuple :: tuple()) -> ok | {error, any()}.
+-spec insert(TableOrTx :: table_name() | tx(), ObjectTuple :: tuple()) -> ok | {error, any()}.
 insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
     #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+    Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, ObjectTuple),
+    mfdb_lib:flow(Flow, true);
+insert(#st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St, ObjectTuple) when is_tuple(ObjectTuple) ->
+    Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, ObjectTuple),
+    mfdb_lib:flow(Flow, true).
+
+%% @private
+mk_insert_flow_(StOrTx, RecName, Fields, Index, Ttl, ObjectTuple) ->
     TtlPos = case Ttl of
                  {field, Pos} -> Pos;
                  _ -> -1
@@ -218,11 +241,11 @@ insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
     InRec = {RName, size(ObjectTuple)},
     Expect = {RecName, ExpectLength},
     %% Functions must return 'true' to continue, anything else will exit early
-    Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
-            {TypeCheckFun, [ObjectList, Fields, TtlPos]},
-            {IndexCheckFun, [ObjectList, IndexList]},
-            {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
-    mfdb_lib:flow(Flow, true).
+    [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
+     {TypeCheckFun, [ObjectList, Fields, TtlPos]},
+     {IndexCheckFun, [ObjectList, IndexList]},
+     {fun mfdb_lib:put/3, [StOrTx, RKey, ObjectTuple]}].
+
 
 %% @doc Atomic counter increment/decrement
 -spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> integer().
@@ -237,21 +260,55 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
     mfdb_lib:set_counter(Db, TabPfx, Key, Value).
 
 %% @doc Applies a function to all records in the table
--spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any()) ->  any().
+%% InnerFun is a 3-arity function with specification:
+%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
+%%   - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
+%%  A contrived example:
+%%    fun(Tx, #test{id = Id} = R, {Kept, Deleted}) ->
+%%       case Id > 5 of
+%%           true ->
+%%               ok = mfdb:delete(Tx, Id),
+%%               {Kept, [Id | Deleted]};
+%%           false ->
+%%               {[Id | Kept], Deleted}
+%%       end
+%%    end
+%% @end
+-spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any()) ->  any().
 fold(Table, InnerFun, OuterAcc) ->
     MatchSpec = [{'_',[],['$_']}],
-    fold_cont_(select_(Table, MatchSpec, 50), InnerFun, OuterAcc).
+    St0 = mfdb_manager:st(Table),
+    St = St0#st{write_lock = true},
+    fold_cont_(select_(St, MatchSpec, 50, InnerFun, OuterAcc)).
 
 %% @doc Applies a function to all records in the table matching the MatchSpec
+%% InnerFun is a 3-arity function with specification:
+%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
+%%   - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
+%%  A contrived example:
+%%    fun(Tx, #test{id = Id} = R, {Kept, Deleted}) ->
+%%       case Id > 5 of
+%%           true ->
+%%               ok = mfdb:delete(Tx, Id),
+%%               {Kept, [Id | Deleted]};
+%%           false ->
+%%               {[Id | Kept], Deleted}
+%%       end
+%%    end
+%% @end
 -spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) ->  any().
 fold(Table, InnerFun, OuterAcc, MatchSpec) ->
-    fold_cont_(select_(Table, MatchSpec, 50), InnerFun, OuterAcc).
+    St0 = mfdb_manager:st(Table),
+    St = St0#st{write_lock = true},
+    fold_cont_(select_(St, MatchSpec, 50, InnerFun, OuterAcc)).
 
 %% @doc Delete a record from the table
--spec delete(Table :: table_name(), PkVal :: any()) ->  ok.
+-spec delete(TxOrTable :: table_name() | tx(), PkVal :: any()) ->  ok.
 delete(Table, PkValue) when is_atom(Table) ->
     #st{} = St = mfdb_manager:st(Table),
-    mfdb_lib:delete(St, PkValue).
+    mfdb_lib:delete(St, PkValue);
+delete(#st{} = Tx, PkValue) ->
+    mfdb_lib:delete(Tx, PkValue).
 
 -spec subscribe(Table :: table_name(), Key :: any(), ReplyType :: watcher_option()) -> ok | {error, invalid_reply | no_such_table | {any(), any()}}.
 subscribe(Table, Key, ReplyType) when is_atom(Table) ->
@@ -515,7 +572,11 @@ reap_expired_(#st{db = Db, pfx = TabPfx} = St, RangeStart, RangeEnd) ->
 
 %% @private
 select_(Table, Matchspec0, Limit) when is_atom(Table) ->
-    #st{db = Db, pfx = TabPfx, index = Indexes0} = St = mfdb_manager:st(Table),
+    select_(mfdb_manager:st(Table), Matchspec0, Limit, undefined, []);
+select_(#st{index = Indexes0} = St, Matchspec0, Limit) ->
+    select_(#st{index = Indexes0} = St, Matchspec0, Limit, undefined, []).
+
+select_(#st{index = Indexes0} = St, Matchspec0, Limit, DataFun, DataAcc) ->
     {Guards, Binds, Ms} =
         case Matchspec0 of
             [{ {{_V, '$1'}} , G, _}] ->
@@ -532,19 +593,22 @@ select_(Table, Matchspec0, Limit) when is_atom(Table) ->
     {PkStart, PkEnd} = primary_table_range_(RangeGuards),
     case idx_sel(RangeGuards, Indexes, St) of
         {use_index, IdxParams} = _IdxSel ->
-            do_indexed_select(Table, Ms, IdxParams, Limit);
+            do_indexed_select(St, Ms, IdxParams, Limit, DataFun, DataAcc);
         no_index ->
-            do_select(Db, TabPfx, Ms, PkStart, PkEnd, Limit)
+            do_select(St, Ms, PkStart, PkEnd, Limit, DataFun, DataAcc)
     end.
 
 %% @private
-fold_cont_({[], '$end_of_table'}, _InnerFun, OuterAcc) ->
-    OuterAcc;
-fold_cont_({Data, '$end_of_table'}, InnerFun, OuterAcc) ->
-    lists:foldl(InnerFun, OuterAcc, Data);
-fold_cont_({Data, Cont}, InnerFun, OuterAcc) when is_function(Cont) ->
-    NewAcc = lists:foldl(InnerFun, OuterAcc, Data),
-    fold_cont_(Cont(), InnerFun, NewAcc).
+fold_cont_({error, _Err, _Acc} = Res) ->
+    Res;
+fold_cont_({ok, [], '$end_of_table'}) ->
+    [];
+fold_cont_({ok, Data, '$end_of_table'}) when is_list(Data) ->
+    lists:sort(Data);
+fold_cont_({ok, Data, '$end_of_table'}) ->
+    Data;
+fold_cont_({ok, Data, Cont}) when is_function(Cont, 1) ->
+    fold_cont_(Cont(Data)).
 
 %% @private
 is_wild('_') ->
@@ -913,8 +977,8 @@ intersection(A,B) when is_list(A), is_list(B) ->
     A -- (A -- B).
 
 %% @private
-outer_match_fun_(TabPfx, OCompiledKeyMs) ->
-    fun(Tx, Id, Acc0) ->
+outer_match_fun_(TabPfx, OCompiledKeyMs, UserFun) ->
+    fun(#st{db = Tx} = St, Id, Acc0) ->
             K = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, Id}),
             case erlfdb:wait(erlfdb:get(Tx, K)) of
                 not_found ->
@@ -927,9 +991,12 @@ outer_match_fun_(TabPfx, OCompiledKeyMs) ->
                         [] ->
                             %% Did not match specification
                             Acc0;
-                        [Matched] ->
+                        [Matched] when UserFun =:= undefined ->
                             %% Matched specification
-                            [Matched | Acc0]
+                            [Matched | Acc0];
+                        [Matched] when is_function(UserFun, 3) ->
+                            %% Matched specification
+                            UserFun(St, Matched, Acc0)
                     end
             end
     end.
@@ -962,7 +1029,7 @@ pk_to_range(TabPfx, 'end', _) ->
     {fdbr, erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_END}))}.
 
 %% @private
-do_select(Db, TabPfx, MS, PkStart, PkEnd, Limit) ->
+do_select(#st{pfx = TabPfx} = St, MS, PkStart, PkEnd, Limit, DataFun, DataAcc) ->
     KeysOnly = needs_key_only(MS),
     Keypat = case (PkStart =/= undefined orelse PkEnd =/= undefined) of
                  true  ->
@@ -973,31 +1040,31 @@ do_select(Db, TabPfx, MS, PkStart, PkEnd, Limit) ->
                      mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})
              end,
     CompiledMs = ets:match_spec_compile(MS),
-    DataFun = undefined,
-    InAcc = [],
-    Iter = iter_(Db, TabPfx, Keypat, KeysOnly, CompiledMs, DataFun, InAcc, Limit),
+    Iter = iter_(St, Keypat, KeysOnly, CompiledMs, DataFun, DataAcc, Limit),
     do_iter(Iter, Limit, []).
 
 %% @private
-do_indexed_select(Tab0, MS, {_IdxPos, {Start, End, Match, Guard}}, Limit) ->
-    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Tab0),
+do_indexed_select(#st{pfx = TabPfx} = St, MS, {_IdxPos, {Start, End, Match, Guard}}, Limit, UserDataFun, DataAcc) ->
     KeyMs = [{Match, Guard, ['$_']}],
     OKeysOnly = needs_key_only(MS),
     ICompiledKeyMs = ets:match_spec_compile(KeyMs),
     OCompiledKeyMs = ets:match_spec_compile(MS),
-    OuterMatchFun = outer_match_fun_(TabPfx, OCompiledKeyMs),
+    OuterMatchFun = outer_match_fun_(TabPfx, OCompiledKeyMs, UserDataFun),
     DataFun = index_match_fun_(ICompiledKeyMs, OuterMatchFun),
-    OAcc = [],
     IRange = {range, Start, End},
-    Iter = iter_(Db, TabPfx, IRange, OKeysOnly, undefined, DataFun, OAcc, Limit),
+    Iter = iter_(St, IRange, OKeysOnly, undefined, DataFun, DataAcc, Limit),
     do_iter(Iter, Limit, []).
 
 %% @private
+do_iter({error, E, D}, _Limit, Acc) when is_list(D) andalso is_list(Acc) ->
+    {error, E, mfdb_lib:sort(lists:append(D, Acc))};
+do_iter({error, E, D}, _Limit, _Acc) ->
+    {error, E, D};
 do_iter('$end_of_table', Limit, Acc) when Limit =:= 0 ->
-    {mfdb_lib:sort(Acc), '$end_of_table'};
-do_iter({Data, '$end_of_table'}, Limit, Acc) when Limit =:= 0 ->
-    {mfdb_lib:sort(lists:append(Acc, Data)), '$end_of_table'};
-do_iter({Data, Iter}, Limit, Acc) when Limit =:= 0 andalso is_function(Iter) ->
+    {ok, mfdb_lib:sort(Acc), '$end_of_table'};
+do_iter({ok, Data, '$end_of_table'}, Limit, Acc) when Limit =:= 0 ->
+    {ok, mfdb_lib:sort(lists:append(Acc, Data)), '$end_of_table'};
+do_iter({ok, Data, Iter}, Limit, Acc) when Limit =:= 0 andalso is_function(Iter) ->
     NAcc = mfdb_lib:sort(lists:append(Acc, Data)),
     case Iter() of
         '$end_of_table' ->
@@ -1008,19 +1075,35 @@ do_iter({Data, Iter}, Limit, Acc) when Limit =:= 0 andalso is_function(Iter) ->
             do_iter(NIter, Limit, NAcc)
     end;
 do_iter('$end_of_table', Limit, Acc) when Limit > 0 ->
-    {mfdb_lib:sort(Acc), '$end_of_table'};
-do_iter({Data, '$end_of_table'}, Limit, Acc) when Limit > 0 ->
-    {mfdb_lib:sort(lists:append(Acc, Data)), '$end_of_table'};
-do_iter({[], Iter}, Limit, Acc) when Limit > 0 andalso is_function(Iter) ->
+    {ok, mfdb_lib:sort(Acc), '$end_of_table'};
+do_iter({ok, Data, '$end_of_table'}, Limit, Acc)
+  when Limit > 0 andalso
+       is_list(Data) andalso
+       is_list(Acc) ->
+    {ok, mfdb_lib:sort(lists:append(Acc, Data)), '$end_of_table'};
+do_iter({ok, Data, '$end_of_table'}, Limit, _Acc)
+  when Limit > 0 ->
+    {ok, Data, '$end_of_table'};
+do_iter({ok, [], Iter}, Limit, Acc)
+  when Limit > 0 andalso
+       is_function(Iter) ->
     do_iter(Iter(), Limit, Acc);
-do_iter({Data, Iter}, Limit, Acc) when Limit > 0 andalso is_function(Iter) ->
+do_iter({ok, Data, Iter}, Limit, Acc)
+  when Limit > 0 andalso
+       is_function(Iter) andalso
+       is_list(Data) andalso
+       is_list(Acc) ->
     NAcc = mfdb_lib:sort(lists:append(Acc, Data)),
-    {NAcc, Iter}.
+    {ok, NAcc, Iter};
+do_iter({ok, Data, Iter}, Limit, _Acc)
+  when Limit > 0 andalso
+       is_function(Iter) ->
+    {ok, Data, Iter}.
 
 %% @private
--spec iter_(Db :: ?IS_DB, TabPfx :: binary(), StartKey :: any(), KeysOnly :: boolean(), Ms :: undefined | ets:comp_match_spec(), DataFun :: undefined | function(), InAcc :: list(), DataLimit :: pos_integer()) ->
+-spec iter_(St :: tx(), StartKey :: any(), KeysOnly :: boolean(), Ms :: undefined | ets:comp_match_spec(), DataFun :: undefined | function(), InAcc :: list(), DataLimit :: pos_integer()) ->
                    {list(), '$end_of_table'} | {list(), ?IS_ITERATOR}.
-iter_(?IS_DB = Db, TabPfx, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) ->
+iter_(#st{db = Db, pfx = TabPfx, write_lock = WriteLock} = InSt, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) ->
     Reverse = 0, %% we're not iterating in reverse
     {SKey, EKey} = iter_start_end_(TabPfx, StartKey0),
     St0 = #iter_st{
@@ -1039,10 +1122,16 @@ iter_(?IS_DB = Db, TabPfx, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) -
              streaming_mode = iterator,%% it's *not* stream_iterator bad type spec in erlfdb_nif
              iteration = 1,
              snapshot = true,
-             reverse = Reverse
+             reverse = Reverse,
+             write_lock = WriteLock,
+             st = InSt
             },
-    St = iter_transaction_(St0),
-    iter_int_({cont, St}).
+    case iter_transaction_(St0) of
+        #iter_st{} = ItrSt ->
+            iter_int_({cont, ItrSt});
+        {error, Error} ->
+            {error, Error, InAcc}
+    end.
 
 %% @private
 iter_int_({cont, #iter_st{tx = Tx,
@@ -1053,16 +1142,19 @@ iter_int_({cont, #iter_st{tx = Tx,
                           data_count = DataCount, %% count in continuation accumulator
                           data_acc = DataAcc, %% accum for continuation
                           data_fun = DataFun, %% Fun applied to selected data when not key-only
-                          iteration = Iteration} = St0}) ->
+                          iteration = Iteration,
+                          write_lock = WLock,
+                          st = DbSt} = St0}) ->
     {{RawRows, Count, HasMore0}, St} = iter_future_(St0),
     case Count of
         0 ->
-            {DataAcc, '$end_of_table'};
+            {ok, DataAcc, '$end_of_table'};
         _ ->
             {Rows, HasMore, LastKey} = rows_more_last_(DataLimit, DataCount, RawRows,
                                                        Count, HasMore0),
-            {NewDataAcc, AddCount} = iter_append_(Rows, Tx, TabPfx, KeysOnly, Ms,
-                                                  DataFun, 0, DataAcc),
+            {NewDataAcc0, AddCount} = iter_append_(Rows, Tx, DbSt, TabPfx, KeysOnly, Ms,
+                                                   DataFun, 0, DataAcc),
+            NewDataAcc = case is_list(NewDataAcc0) of true -> lists:reverse(NewDataAcc0); false -> NewDataAcc0 end,
             NewDataCount = DataCount + AddCount,
             HitLimit = hit_data_limit_(NewDataCount, DataLimit),
             Done = RawRows =:= []
@@ -1071,9 +1163,13 @@ iter_int_({cont, #iter_st{tx = Tx,
             case Done of
                 true when HasMore =:= false ->
                     %% no more rows
-                    iter_commit_(Tx),
-                    {lists:reverse(NewDataAcc), '$end_of_table'};
-                true when HasMore =:= true ->
+                    case iter_commit_(Tx) of
+                        ok ->
+                            {ok, NewDataAcc, '$end_of_table'};
+                        {error, FdbErr} ->
+                            {error, FdbErr, DataAcc}
+                    end;
+                true when HasMore =:= true andalso WLock =:= false ->
                     %% there are more rows, return accumulated data and a continuation fun
                     NSt0 = St#iter_st{
                              start_sel = erlfdb_key:first_greater_than(LastKey),
@@ -1081,8 +1177,26 @@ iter_int_({cont, #iter_st{tx = Tx,
                              data_count = 0,
                              data_acc = []
                             },
-                    NSt = iter_transaction_(NSt0),
-                    {lists:reverse(NewDataAcc), fun() -> iter_int_({cont, NSt}) end};
+                    case iter_transaction_(NSt0) of
+                        {error, FdbErr} ->
+                            {error, FdbErr, DataAcc};
+                        NSt ->
+                            {ok, NewDataAcc, fun() -> iter_int_({cont, NSt}) end}
+                    end;
+                true when HasMore =:= true andalso WLock =:= true ->
+                    %% there are more rows, return accumulated data and a continuation fun
+                    NSt0 = St#iter_st{
+                             start_sel = erlfdb_key:first_greater_than(LastKey),
+                             iteration = Iteration + 1,
+                             data_count = 0,
+                             data_acc = []
+                            },
+                    case iter_transaction_(NSt0) of
+                        {error, FdbErr} ->
+                            {error, FdbErr, DataAcc};
+                        NSt ->
+                            {ok, NewDataAcc, fun(InDataAcc) -> iter_int_({cont, NSt#iter_st{data_acc = InDataAcc}}) end}
+                    end;
                 false ->
                     %% there are more rows, but we need to continue accumulating
                     %% This loops internally, so no fun, just the continuation
@@ -1092,62 +1206,62 @@ iter_int_({cont, #iter_st{tx = Tx,
                              data_count = NewDataCount,
                              data_acc = NewDataAcc
                             },
-                    NSt = iter_transaction_(NSt0),
-                    iter_int_({cont, NSt})
+                    case iter_transaction_(NSt0) of
+                        {error, FdbErr} ->
+                            {error, FdbErr, DataAcc};
+                        NSt ->
+                            iter_int_({cont, NSt})
+                    end
             end
     end.
 
 %% @private
-iter_append_([], _Tx, _TabPfx, _KeysOnly, _Ms, _DataFun, AddCount, Acc) ->
+iter_append_([], _Tx, _St, _TabPfx, _KeysOnly, _Ms, _DataFun, AddCount, Acc) ->
     {Acc, AddCount};
-iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) ->
+iter_append_([{K, V} | Rest], Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) ->
     case mfdb_lib:decode_key(TabPfx, K) of
-        {idx, {{IK, IV}} = Idx} when is_function(DataFun, 3) ->
-            %% Record matched specification, is a fold operation, apply the supplied DataFun
-            case not lists:member({IK, IV}, Acc) of
-                true ->
-                    NAcc = DataFun(Tx, Idx, Acc),
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
-                false ->
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, Acc)
-            end;
-        {idx, {{IK, IV}} = Idx} ->
-            case not lists:member({IK, IV}, Acc) andalso
-                Ms =/= undefined andalso
+        {idx, Idx} when is_function(DataFun, 3) ->
+            %% This is a matched index with a supplied fun
+            NAcc = DataFun(St, Idx, Acc),
+            iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
+        {idx, Idx} ->
+            %% This is a matched index without a supplied fun
+            case Ms =/= undefined andalso
                 ets:match_spec_run([Idx], Ms) of
                 false ->
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, Acc);
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, Acc);
                 [] ->
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, Acc);
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, Acc);
                 [Match] ->
                     NAcc = [Match | Acc],
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc)
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc)
             end;
         Key ->
+            %% This is an actual record, not an index
             Rec = mfdb_lib:decode_val(Tx, TabPfx, V),
             case Ms =/= undefined andalso ets:match_spec_run([Rec], Ms) of
                 false  when is_function(DataFun, 2) ->
                     %% Record matched specification, is a fold operation, apply the supplied DataFun
                     NAcc = DataFun(Rec, Acc),
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
                 false  when is_function(DataFun, 3) ->
                     %% Record matched specification, is a fold operation, apply the supplied DataFun
-                    NAcc = DataFun(Tx, Rec, Acc),
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
+                    NAcc = DataFun(St, Rec, Acc),
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
                 false ->
                     NAcc = [iter_val_(KeysOnly, Key, Rec) | Acc],
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
                 [] ->
                     %% Record did not match specification
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc);
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc);
                 [Match] when DataFun =:= undefined ->
                     %% Record matched specification, but not a fold operation
                     NAcc = [Match | Acc],
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
-                [Match] when is_function(DataFun, 2) ->
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
+                [Match] when is_function(DataFun, 3) ->
                     %% Record matched specification, is a fold operation, apply the supplied DataFun
-                    NAcc = DataFun(Match, Acc),
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc)
+                    NAcc = DataFun(St, Match, Acc),
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc)
             end
     end.
 
@@ -1179,18 +1293,38 @@ iter_start_end_(TblPfx, StartKey0) ->
     end.
 
 %% @private
-iter_transaction_(#iter_st{db = Db, tx = Tx} = St) ->
-    iter_commit_(Tx),
-    NTx = erlfdb:create_transaction(Db),
-    erlfdb_nif:transaction_set_option(NTx, disallow_writes, 1),
-    St#iter_st{tx = NTx}.
+iter_transaction_(#iter_st{db = Db, tx = Tx, write_lock = true, start_sel = {StartSel, _}, end_sel = {EndSel, _}, st = DbSt} = St) ->
+    case iter_commit_(Tx) of
+        ok ->
+            NTx = erlfdb:create_transaction(Db),
+            ok = erlfdb_nif:transaction_add_conflict_range(NTx, StartSel, EndSel, read),
+            ok = erlfdb_nif:transaction_add_conflict_range(NTx, StartSel, EndSel, write),
+            St#iter_st{tx = NTx, st = DbSt#st{db = NTx}};
+        Error ->
+            Error
+    end;
+iter_transaction_(#iter_st{db = Db, tx = Tx, st = DbSt} = St) ->
+    case iter_commit_(Tx) of
+        ok ->
+            NTx = erlfdb:create_transaction(Db),
+            erlfdb_nif:transaction_set_option(NTx, disallow_writes, 1),
+            St#iter_st{tx = NTx, st = DbSt#st{db = NTx}};
+        Error ->
+            Error
+    end.
 
 %% @private
 iter_commit_(undefined) ->
     ok;
 iter_commit_(?IS_TX = Tx) ->
-    catch erlfdb:wait(erlfdb:commit(Tx)),
-    ok.
+    try ok = erlfdb:wait(erlfdb:commit(Tx))
+    catch
+        _E:{erlfdb_error, ErrCode}:_Stacktrace ->
+            ok = erlfdb:wait(erlfdb:on_error(Tx, ErrCode)),
+            ErrAtom = mfdb_lib:fdb_err(ErrCode),
+            erlfdb:cancel(Tx),
+            {error, ErrAtom}
+    end.
 
 %% @private
 iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
@@ -1213,6 +1347,7 @@ iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
             {R, St0}
     catch
         error:{erlfdb_error, Code} ->
+            %% We retry for get operations
             ok = erlfdb:wait(erlfdb:on_error(Tx, Code)),
             St = iter_transaction_(St0),
             iter_future_(St)

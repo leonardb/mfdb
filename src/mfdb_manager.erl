@@ -169,7 +169,7 @@ ttl_(Options, {_, Fields}) ->
                 end;
             undefined ->
                 undefined;
-            _ ->
+            _Other ->
                 invalid_ttl
         end,
     TableTtl =

@@ -31,11 +31,11 @@
          import/2]).
 
 -export([insert/2]).
+-export([update/3]).
+-export([delete/2]).
 
 -export([set_counter/3,
          update_counter/3]).
-
--export([delete/2]).
 
 -export([lookup/2]).
 
@@ -244,8 +244,43 @@ mk_insert_flow_(StOrTx, RecName, Fields, Index, Ttl, ObjectTuple) ->
     [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
      {TypeCheckFun, [ObjectList, Fields, TtlPos]},
      {IndexCheckFun, [ObjectList, IndexList]},
-     {fun mfdb_lib:put/3, [StOrTx, RKey, ObjectTuple]}].
+     {fun mfdb_lib:write/3, [StOrTx, RKey, ObjectTuple]}].
 
+-spec update(Table :: table_name(), Key :: any(), Changes :: field_changes()) -> ok | {error, any()}.
+update(Table, Key, Changes) when is_atom(Table) ->
+    #st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+    IndexList = tl(tuple_to_list(Index)),
+    ChangeTuple = erlang:setelement(1, erlang:make_tuple(size(Index), ?NOOP_SENTINAL), RecordName),
+    TtlPos = case Ttl of
+                 {field, Pos} -> Pos;
+                 _ -> -1
+             end,
+    case validate_updates_(Fields, Changes, 2, ChangeTuple, [], []) of
+        {error, _} = Err ->
+            Err;
+        {UpdateRec, NVals, NFields} ->
+            Flow = [{fun mfdb_lib:check_field_types/3, [NVals, NFields, TtlPos]},
+                    {fun mfdb_lib:check_index_sizes/2, [NVals, IndexList]},
+                    {fun mfdb_lib:update/3, [St, Key, UpdateRec]}],
+            mfdb_lib:flow(Flow, true)
+    end.
+
+%% @private
+%% Assign the values in changes to the correct positions in the ChangeTuple
+%% and verify that the fields in the changes are defined for the record
+validate_updates_(_Fields, [], _Pos, ChangeTuple, ValueAcc, TypeAcc) ->
+    {ChangeTuple, ValueAcc, TypeAcc};
+validate_updates_([], Changes, _Pos, _ChangeTuple, _ValueAcc, _TypeAcc) when Changes =/= [] ->
+    {error, unknown_fields_in_update};
+validate_updates_([{FieldName, FieldType} | Rest], Changes, Pos, ChangeTuple, ValueAcc, TypeAcc) ->
+    case lists:keytake(FieldName, 1, Changes) of
+        false ->
+            %% Field not being changed, so set type to 'any'
+            validate_updates_(Rest, Changes, Pos + 1, ChangeTuple, [?NOOP_SENTINAL | ValueAcc], [{FieldName, any} | TypeAcc]);
+        {value, {FieldName, Value}, NChanges} ->
+            NChangeTuple = erlang:setelement(Pos, ChangeTuple, Value),
+            validate_updates_(Rest, NChanges, Pos + 1, NChangeTuple, [Value | ValueAcc], [{FieldName, FieldType} | TypeAcc])
+    end.
 
 %% @doc Atomic counter increment/decrement
 -spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> integer().
@@ -279,7 +314,7 @@ fold(Table, InnerFun, OuterAcc) ->
     MatchSpec = [{'_',[],['$_']}],
     St0 = mfdb_manager:st(Table),
     St = St0#st{write_lock = true},
-    fold_cont_(select_(St, MatchSpec, 50, InnerFun, OuterAcc)).
+    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
 
 %% @doc Applies a function to all records in the table matching the MatchSpec
 %% InnerFun is a 3-arity function with specification:
@@ -300,7 +335,7 @@ fold(Table, InnerFun, OuterAcc) ->
 fold(Table, InnerFun, OuterAcc, MatchSpec) ->
     St0 = mfdb_manager:st(Table),
     St = St0#st{write_lock = true},
-    fold_cont_(select_(St, MatchSpec, 50, InnerFun, OuterAcc)).
+    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
 
 %% @doc Delete a record from the table
 -spec delete(TxOrTable :: table_name() | tx(), PkVal :: any()) ->  ok.
@@ -1405,11 +1440,12 @@ do_import_(Table, SourceFile, ImportId) ->
                 Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
                         {TypeCheckFun, [ObjectList, Fields, TtlPos]},
                         {IndexCheckFun, [ObjectList, IndexList]},
-                        {fun mfdb_lib:put/3, [St, RKey, ObjectTuple]}],
+                        {fun mfdb_lib:write/3, [St, RKey, ObjectTuple]}],
                 try mfdb_lib:flow(Flow, true) of
                     ok ->
                         Cnt + 1;
-                    _ ->
+                    _Other ->
+                        error_logger:error_msg("Import error: ~p ~p", [_Other, ObjectTuple]),
                         Cnt
                 catch
                     E:M:Stack ->

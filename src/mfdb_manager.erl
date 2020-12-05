@@ -229,14 +229,19 @@ load_table_(Tab) ->
             ok
     end.
 
-create_table_(Tab, Record, Indexes, Ttl) when is_binary(Tab) ->
+create_table_(Tab, Record0, Indexes, Ttl) when is_binary(Tab) ->
     [#conn{key_id = KeyId} = Conn] = ets:lookup(?MODULE, conn),
     Db = mfdb_conn:connection(Conn),
     %% Functions must return 'ok' to continue, anything else will exit early
+    Record = record_(Record0),
     Flow = [{fun mfdb_lib:validate_record/1, [Record]},
             {fun mfdb_lib:validate_indexes/2, [Indexes, Record]},
             {fun table_create_if_not_exists_/6, [Db, KeyId, Tab, Record, Indexes, Ttl]}],
     mfdb_lib:flow(Flow, ok).
+
+%% Set any unspecified fields as 'any' type
+record_({RName, Fields}) ->
+    {RName, [case F0 of {_, _} = F -> F; F -> {F, any} end || F0 <- Fields]}.
 
 table_exists_(Db, TabKey) ->
     %% Does a table config exist

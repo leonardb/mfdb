@@ -2,11 +2,11 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--record(test_a, {id :: integer(), value :: binary()}).
+-record(test_a, {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
 %%-record(test_b, {id :: integer(), value :: binary()}).
--record(test, {id :: integer(), value :: binary()}).
--define(TEST_A, {test_a, [{id, integer}, {value, binary}]}).
--define(TEST_B, {test_b, [{id, integer}, {value, binary}]}).
+-record(test, {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
+-define(TEST_A, {test_a, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
+-define(TEST_B, {test_b, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
 -define(APP_KEY, <<"cb136a3d-de40-4a85-bd10-bb23f6f1ec2a">>).
 
 %% This sux, but it's the only way I can get around random timeout issues
@@ -14,15 +14,16 @@ t_001_test_() -> {timeout, 10, fun() -> start() end}.
 t_002_test_() -> {timeout, 10, fun() -> create_and_clear_table() end}.
 t_003_test_() -> {timeout, 10, fun() -> list_tables() end}.
 t_004_test_() -> {timeout, 10, fun() -> basic_insert() end}.
-t_005_test_() -> {timeout, 10, fun() -> table_count() end}.
+t_005_test_() -> {timeout, 10, fun() -> basic_lookup() end}.
 t_006_test_() -> {timeout, 10, fun() -> verify_records() end}.
 t_007_test_() -> {timeout, 10, fun() -> counter_inc_dec() end}.
-t_008_test_() -> {timeout, 10, fun() -> watch_for_update() end}.
-t_009_test_() -> {timeout, 10, fun() -> watch_for_delete() end}.
-t_010_test_() -> {timeout, 10, fun() -> select_no_continuation() end}.
-t_011_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
-t_012_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
-t_013_test_() -> {timeout, 10, fun() -> check_field_types() end}.
+t_008_test_() -> {timeout, 10, fun() -> watch_for_insert() end}.
+t_009_test_() -> {timeout, 10, fun() -> watch_for_update() end}.
+t_010_test_() -> {timeout, 10, fun() -> watch_for_delete() end}.
+t_011_test_() -> {timeout, 10, fun() -> select_no_continuation() end}.
+t_012_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
+t_013_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
+t_014_test_() -> {timeout, 10, fun() -> check_field_types() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -54,15 +55,15 @@ basic_insert() ->
     {ok, Count} = mfdb:table_info(test_a, count),
     ?assertEqual(50, Count).
 
-table_count() ->
+basic_lookup() ->
     Rec50In = #test_a{id = 50, value = integer_to_binary(50, 32)},
     {ok, Rec50Out} = mfdb:lookup(test_a, 50),
     ?assertEqual(Rec50In, Rec50Out).
 
 verify_records() ->
     IdSumIn = lists:sum([X || X <- lists:seq(1, 50)]),
-    IdSumOut = mfdb:fold(test_a, fun(#test_a{id = X}, Acc) -> Acc + X end, 0),
-    ?assertEqual(IdSumIn, IdSumOut).
+    IdSumOut = mfdb:fold(test_a, fun(_Tx, #test_a{id = X}, Acc) -> Acc + X end, 0),
+    ?assertEqual({ok, IdSumIn}, IdSumOut).
 
 counter_inc_dec() ->
     ?assertEqual(50, mfdb:update_counter(test_a, my_counter, 50)),
@@ -72,11 +73,28 @@ counter_inc_dec() ->
     %% cannot go negative
     ?assertEqual(-90, mfdb:update_counter(test_a, my_counter, -100)).
 
-watch_for_update() ->
-    ok = mfdb:subscribe(test_a, 1, {notify, info}),
-    NewRec = #test_a{id = 1, value = <<"updated">>},
+watch_for_insert() ->
+    Id = 51,
+    ok = mfdb:delete(test_a, Id),
+    ok = mfdb:subscribe(test_a, Id, {notify, info}),
+    DateTime = erlang:universaltime(),
+    NewRec = #test_a{id = Id, value = <<"updated">>, other = DateTime},
     ok = mfdb:insert(test_a, NewRec),
-    Expect = {test_a, 1, updated, NewRec},
+    Expect = {test_a, Id, created, NewRec},
+    receive
+        Msg ->
+            ?assertEqual(Expect, Msg)
+    end.
+
+watch_for_update() ->
+    Id = 1,
+    ok = mfdb:insert(test_a, #test_a{id = Id, value = <<"BaseVal">>, other = undefined}),
+    ok = mfdb:subscribe(test_a, Id, {notify, info}),
+    DateTime = erlang:universaltime(),
+    ExpectRec = #test_a{id = Id, value = <<"updated">>, other = DateTime},
+    Changes = [{value, <<"updated">>}, {other, DateTime}],
+    ok = mfdb:update(test_a, Id, Changes),
+    Expect = {test_a, Id, updated, ExpectRec},
     receive
         Msg ->
             ?assertEqual(Expect, Msg)

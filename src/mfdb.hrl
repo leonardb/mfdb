@@ -49,6 +49,7 @@
 -define(IS_ITERATOR, {cont, #iter_st{}}).
 -define(GET_TX(SS), element(2, SS)).
 -define(SORT(RecName, L), mfdb_lib:sort(RecName, L)).
+-define(NOOP_SENTINAL, '__nochange__').
 
 -type db() :: {erlfdb_database, reference()}.
 -type tx() :: {erlfdb_transaction, reference()}.
@@ -66,12 +67,13 @@
 -type table_name()  :: atom().
 -type field_name()  :: atom().
 -type field_type()  :: binary | integer | float | list | tuple | date | datetime | time | inet | inet4 | inet6 | atom | any | term | undefined | null.
--type field()       :: field_name() | {field_name(), field_type() | list(field_type())}.
+-type field()       :: {field_name(), field_type() | list(field_type())}.
 -type fields()      :: [field()].
 -type index()       :: pos_integer().
 -type indexes()     :: [] | list(index()).
 -type mfdbrecord()  :: {atom(), fields()}.
 -type continuation() :: function().
+-type field_changes() :: list({field(), any()}).
 
 -type option() :: {record, mfdbrecord()} | {indexes, indexes()} | {table_ttl, ttl()} | {field_ttl, index()}.
 -type options() :: list(option()).

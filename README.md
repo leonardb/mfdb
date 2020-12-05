@@ -15,10 +15,10 @@ It supports:
 
 # Table creation options
 
-- record :: {RecordName :: atom, Fields :: list(atom() | {atom(), atom()})}.
+- record :: {RecordName :: atom, Fields :: list({atom(), atom() list(atom())})}.
 
     Fields which are typed are checked for validity on insert.
-EG: `{record, {test, [{id, integer}, {value, binary}]}}`
+EG: `{record, {test, [{id, integer}, {value, [undefined | binary]}]}}`
 
     Supported types for fields:
     
@@ -33,10 +33,13 @@ EG: `{record, {test, [{id, integer}, {value, binary}]}}`
     
     Secondary indexes are used automatically in `mfdb:select/2` (if they exist) and can be used explicitly through `mfdb:index_read/3`
 
-- ttl :: {ttl, ttl()}
+- table_ttl :: {table_ttl, ttl()}
     ```erlang
     -type ttl() :: {minutes | hours | days, pos_integer()}.
   ```
+*or*
+- field_ttl :: {field_ttl, integer()} where the integer is the index of the field to use for TTLs.
+    This field *must* be of type 'datetime' and expects a UTC calendar:datetime() or the atom 'never'. 
   
   When TTL is configured for a table older records will be reaped automatically.
   

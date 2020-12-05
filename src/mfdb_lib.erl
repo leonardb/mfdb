@@ -17,8 +17,9 @@
 
 -compile({no_auto_import, [put/2, get/1]}).
 
--export([put/3,
+-export([write/3,
          delete/2,
+         update/3,
          bin_split/1,
          bin_join_parts/1,
          decode_key/2,
@@ -94,15 +95,14 @@ sort(L) ->
     lists:sort(L).
 
 %% @doc
-%% insert or replace a record. If a record is unchanged it is not updated
-%% in order to reduce the load potentially added by indexes
+%% Inserts or replaces a record
 %% @end
-put(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
-    erlfdb:transactional(Db, put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record));
-put(#st{db = ?IS_TX = Tx, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
-    erlfdb:transactional(Tx, put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record)).
+write(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
+    erlfdb:transactional(Db, write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record));
+write(#st{db = ?IS_TX = Tx, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
+    erlfdb:transactional(Tx, write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record)).
 
-put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
+write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
     TtlValue = ttl_val_(Ttl, Record),
     fun(Tx) ->
             EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
@@ -143,7 +143,7 @@ put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
                 end,
             case DoSave of
                 true ->
-                    put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
+                    write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
                     ok = create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes),
                     %% Update the 'size' of stored data
                     ok = inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc),
@@ -151,23 +151,47 @@ put_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
                     ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
                     %% Create/update any TTLs
                     ok = ttl_add(Tx, TabPfx, TtlValue, PkValue);
-                %% and finally commit the changes
-                %%ok = erlfdb:wait(erlfdb:commit(Tx));
                 false ->
-                    put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
+                    write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
                     %% Update any TTLs
                     ok = ttl_add(Tx, TabPfx, TtlValue, PkValue)
-                    %%ok = erlfdb:wait(erlfdb:commit(Tx))
             end
     end.
 
-put_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)
+write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)
   when Size > ?MAX_VALUE_SIZE ->
     %% Record split into multiple parts
     MfdbRefPartId = save_parts(Tx, TabPfx, HcaRef, EncRecord),
     ok = erlfdb:wait(erlfdb:set(Tx, EncKey, <<"mfdb_ref", Size:32, MfdbRefPartId/binary>>));
-put_(Tx, _TabPfx, _HcaRef, Size, EncKey, Size, EncRecord) ->
+write_(Tx, _TabPfx, _HcaRef, Size, EncKey, Size, EncRecord) ->
     ok = erlfdb:wait(erlfdb:set(Tx, EncKey, <<Size:32, EncRecord/binary>>)).
+
+%% @doc
+%% Update a record. This performs multiple read operations but with a write lock on the key.
+%% @end
+update(#st{db = ?IS_DB = Db, pfx = TblPfx} = St, PkValue, UpdateRec) ->
+    Tx = erlfdb:create_transaction(Db),
+    EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
+    ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+        not_found ->
+            {error, no_results};
+        EncVal ->
+            DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
+            Record = merge_record_(tuple_to_list(DecodedVal), tuple_to_list(UpdateRec)),
+            ok = write(St#st{db = Tx}, PkValue, Record),
+            ok = erlfdb:wait(erlfdb:commit(Tx))
+    end.
+
+merge_record_(Old, New) ->
+    merge_record_(Old, New, []).
+
+merge_record_([], [], Merged) ->
+    list_to_tuple(lists:reverse(Merged));
+merge_record_([OldValue | OldRest], [?NOOP_SENTINAL | NewRest], Merged) ->
+    merge_record_(OldRest, NewRest, [OldValue | Merged]);
+merge_record_([_OldValue | OldRest], [NewValue | NewRest], Merged) ->
+    merge_record_(OldRest, NewRest, [NewValue | Merged]).
 
 ttl_val_(Ttl, Record) ->
     case Ttl of
@@ -459,10 +483,6 @@ validate_record(_) ->
 
 validate_fields_([]) ->
     ok;
-validate_fields_([Name | Rest])
-  when is_atom(Name) ->
-    %% Untyped field
-    validate_fields_(Rest);
 validate_fields_([{Name, Type} | Rest])
   when is_atom(Name) andalso is_atom(Type) ->
     case lists:member(Type, ?FIELD_TYPES) of
@@ -473,6 +493,7 @@ validate_fields_([{Name, Type} | Rest])
     end;
 validate_fields_([{Name, Types} | Rest])
   when is_atom(Name) andalso is_list(Types) ->
+    %% Support multiple types for fields. eg [undefined, binary]
     case lists:all(fun(T) -> lists:member(T, ?FIELD_TYPES) end, Types) of
         true ->
             validate_fields_(Rest);
@@ -486,10 +507,12 @@ check_field_types(Values, Fields, TtlPos) ->
     %% count starts at 2 for fields
     check_field_types(Values, Fields, TtlPos, 2).
 
-
 check_field_types([], [], _, _) ->
     true;
-check_field_types([_Val | RestVal], [Field | RestFields], TtlPos, FPos) when is_atom(Field) ->
+check_field_types([?NOOP_SENTINAL | RestVal], [_Field | RestFields], TtlPos, FPos) ->
+    check_field_types(RestVal, RestFields, TtlPos, FPos + 1);
+check_field_types([_Val | RestVal], [{_Field, Type} | RestFields], TtlPos, FPos)
+  when Type =:= any orelse Type =:= term ->
     check_field_types(RestVal, RestFields, TtlPos, FPos + 1);
 check_field_types([Val | RestVal], [{Field, datetime = Type} | RestFields], TtlPos, TtlPos) ->
     %% Special case to allow 'never' on a ttl datetime field
@@ -514,6 +537,8 @@ check_field_types([Val | RestVal], [{Field, Type} | RestFields], TtlPos, FPos) -
 
 check_index_sizes([], []) ->
     true;
+check_index_sizes([?NOOP_SENTINAL | RestVal], [_Idx | RestIdx]) ->
+    check_index_sizes(RestVal, RestIdx);
 check_index_sizes([_Val | RestVal], [undefined | RestIdx]) ->
     check_index_sizes(RestVal, RestIdx);
 check_index_sizes([Val | RestVal], [#idx{pos = Pos} | RestIdx]) ->
@@ -587,6 +612,9 @@ type_check_(_InVal, inet6) ->
     false;
 type_check_(InVal, atom) ->
     is_atom(InVal);
+type_check_(InVal, Types) when is_list(Types) ->
+    %% Check that InVal is one of types in Type List
+    lists:any(fun(T) -> type_check_(InVal, T) end, Types);
 type_check_(_InVal, _) ->
     false.
 

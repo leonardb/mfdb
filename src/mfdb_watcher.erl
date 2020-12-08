@@ -62,7 +62,7 @@ start_link(Table, TblPfx, Key) ->
 
 init([Table, TblPfx, Key]) ->
     process_flag(trap_exit, true),
-    [#conn{} = Conn] = ets:lookup(mfdb_manager, conn),
+    #conn{} = Conn = persistent_term:get(mfdb_conn),
     Db = mfdb_conn:connection(Conn),
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, Key}),
     OVal = case erlfdb:get(Db, EncKey) of

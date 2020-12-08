@@ -43,7 +43,7 @@ init() ->
                                       tls_cert_path = proplists:get_value(tls_cert_path, Settings, undefined),
                                       tls_ca_path   = proplists:get_value(tls_ca_path, Settings, undefined)
                                      },
-                            ets:insert(mfdb_manager, Conn),
+                            ok = persistent_term:put(mfdb_conn, Conn),
                             ok = load_fdb_nif_(Conn)
                     end
             end
@@ -76,7 +76,7 @@ load_fdb_nif_(#conn{tls_key_path = KeyPath, tls_cert_path = CertPath, tls_ca_pat
 %% @doc Open and return an erlfdb database connection
 -spec connection() -> db().
 connection() ->
-    [#conn{} = Conn] = ets:lookup(mfdb_manager, conn),
+    #conn{} = Conn = persistent_term:get(mfdb_conn),
     connection(Conn).
 
 -spec connection(#conn{}) -> db().

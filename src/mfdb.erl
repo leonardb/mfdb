@@ -70,7 +70,7 @@
 -define(REAP_POLL_INTERVAL, 500).
 
 -type dbrec() :: tuple().
--type foldfun() :: fun((tx(), dbrec(), any()) -> any()).
+-type foldfun() :: fun((tx(), dbrec(), any()) -> any()) | fun((dbrec(), any()) -> any()).
 
 -export_type([dbrec/0, tx/0, foldfun/0]).
 
@@ -121,7 +121,7 @@ import(Table, SourceFile) when is_atom(Table) ->
 
 %% @doc get info about a table
 -spec table_info(Table :: table_name(), InfoOpt :: info_opt()) ->
-                        {ok, integer() | list({count | size, integer()})} | {error, not_connected}.
+          {ok, integer() | list({count | size, integer()})} | {error, not_connected}.
 table_info(Table, InfoOpt)
   when is_atom(Table) andalso
        (InfoOpt =:= all orelse
@@ -294,48 +294,27 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
     #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
     mfdb_lib:set_counter(Db, TabPfx, Key, Value).
 
-%% @doc Applies a function to all records in the table
-%% InnerFun is a 3-arity function with specification:
-%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
-%%   - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
-%%  A contrived example:
-%%    fun(Tx, #test{id = Id} = R, {Kept, Deleted}) ->
-%%       case Id > 5 of
-%%           true ->
-%%               ok = mfdb:delete(Tx, Id),
-%%               {Kept, [Id | Deleted]};
-%%           false ->
-%%               {[Id | Kept], Deleted}
-%%       end
-%%    end
-%% @end
--spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any()) -> {error, atom(), any()} | {ok, any()}.
-fold(Table, InnerFun, OuterAcc) ->
-    MatchSpec = [{'_',[],['$_']}],
-    St0 = mfdb_manager:st(Table),
-    St = St0#st{write_lock = true},
-    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
-
-%% @doc Applies a function to all records in the table matching the MatchSpec
-%% InnerFun is a 3-arity function with specification:
-%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
-%%   - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
-%%  A contrived example:
-%%    fun(Tx, #test{id = Id} = R, {Kept, Deleted}) ->
-%%       case Id > 5 of
-%%           true ->
-%%               ok = mfdb:delete(Tx, Id),
-%%               {Kept, [Id | Deleted]};
-%%           false ->
-%%               {[Id | Kept], Deleted}
-%%       end
-%%    end
-%% @end
--spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) -> {error, atom(), any()} | {ok, any()}.
-fold(Table, InnerFun, OuterAcc, MatchSpec) ->
-    St0 = mfdb_manager:st(Table),
-    St = St0#st{write_lock = true},
-    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
+%%fold(Table, InnerFun, OuterAcc)
+%%  when is_atom(Table) andalso
+%%       (is_function(InnerFun, 2) orelse
+%%        is_function(InnerFun, 3)) ->
+%%    MatchSpec = [{'_',[],['$_']}],
+%%    St0 = mfdb_manager:st(Table),
+%%    St = case is_function(InnerFun, 3) of
+%%             true -> St0#st{write_lock = true};
+%%             false -> St0
+%%         end,
+%%    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
+%%fold(Table, InnerFun, OuterAcc, MatchSpec)
+%%  when is_atom(Table) andalso
+%%       (is_function(InnerFun, 2) orelse
+%%        is_function(InnerFun, 3)) ->
+%%    St0 = mfdb_manager:st(Table),
+%%    St = case is_function(InnerFun, 3) of
+%%             true -> St0#st{write_lock = true};
+%%             false -> St0
+%%         end,
+%%    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
 
 %% @doc Delete a record from the table
 -spec delete(TxOrTable :: table_name() | tx(), PkVal :: any()) ->  ok.
@@ -608,8 +587,8 @@ reap_expired_(#st{db = Db, pfx = TabPfx} = St, RangeStart, RangeEnd) ->
 %% @private
 select_(Table, Matchspec0, Limit) when is_atom(Table) ->
     select_(mfdb_manager:st(Table), Matchspec0, Limit, undefined, []);
-select_(#st{index = Indexes0} = St, Matchspec0, Limit) ->
-    select_(#st{index = Indexes0} = St, Matchspec0, Limit, undefined, []).
+select_(#st{} = St, Matchspec0, Limit) ->
+    select_(St, Matchspec0, Limit, undefined, []).
 
 select_(#st{index = Indexes0} = St, Matchspec0, Limit, DataFun, DataAcc) ->
     {Guards, Binds, Ms} =
@@ -633,17 +612,20 @@ select_(#st{index = Indexes0} = St, Matchspec0, Limit, DataFun, DataAcc) ->
             do_select(St, Ms, PkStart, PkEnd, Limit, DataFun, DataAcc)
     end.
 
-%% @private
-fold_cont_({error, _Err, _Acc} = Res) ->
-    Res;
-fold_cont_({ok, [], '$end_of_table'}) ->
-    {ok, []};
-fold_cont_({ok, Data, '$end_of_table'}) when is_list(Data) ->
-    {ok, lists:sort(Data)};
-fold_cont_({ok, Data, '$end_of_table'}) ->
-    {ok, Data};
-fold_cont_({ok, Data, Cont}) when is_function(Cont, 1) ->
-    fold_cont_(Cont(Data)).
+%%%% @private
+%%fold_cont_({error, _Err, _Acc} = Res) ->
+%%    Res;
+%%fold_cont_({ok, [], '$end_of_table'}) ->
+%%    {ok, []};
+%%fold_cont_({ok, Data, '$end_of_table'}) when is_list(Data) ->
+%%    {ok, lists:sort(Data)};
+%%fold_cont_({ok, Data, '$end_of_table'}) ->
+%%    {ok, Data};
+%%fold_cont_({ok, Data, Cont}) when is_function(Cont, 1) ->
+%%    fold_cont_(Cont(Data));
+%%fold_cont_({ok, _Data, Cont}) when is_function(Cont, 0) ->
+%%    io:format("~p~n", [erlang:fun_info(Cont)]),
+%%    fold_cont_(Cont()).
 
 %% @private
 is_wild('_') ->
@@ -1121,8 +1103,12 @@ do_iter({ok, Data, '$end_of_table'}, Limit, _Acc)
     {ok, Data, '$end_of_table'};
 do_iter({ok, [], Iter}, Limit, Acc)
   when Limit > 0 andalso
-       is_function(Iter) ->
+       is_function(Iter, 0) ->
     do_iter(Iter(), Limit, Acc);
+do_iter({ok, [], Iter}, Limit, Acc)
+  when Limit > 0 andalso
+       is_function(Iter, 1) ->
+    do_iter(Iter([]), Limit, Acc);
 do_iter({ok, Data, Iter}, Limit, Acc)
   when Limit > 0 andalso
        is_function(Iter) andalso
@@ -1137,7 +1123,7 @@ do_iter({ok, Data, Iter}, Limit, _Acc)
 
 %% @private
 -spec iter_(St :: tx(), StartKey :: any(), KeysOnly :: boolean(), Ms :: undefined | ets:comp_match_spec(), DataFun :: undefined | function(), InAcc :: list(), DataLimit :: pos_integer()) ->
-                   {list(), '$end_of_table'} | {list(), ?IS_ITERATOR}.
+          {list(), '$end_of_table'} | {list(), ?IS_ITERATOR}.
 iter_(#st{db = Db, pfx = TabPfx, write_lock = WriteLock} = InSt, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) ->
     Reverse = 0, %% we're not iterating in reverse
     {SKey, EKey} = iter_start_end_(TabPfx, StartKey0),
@@ -1156,7 +1142,7 @@ iter_(#st{db = Db, pfx = TabPfx, write_lock = WriteLock} = InSt, StartKey0, Keys
              target_bytes = 0,
              streaming_mode = iterator,%% it's *not* stream_iterator bad type spec in erlfdb_nif
              iteration = 1,
-             snapshot = true,
+             snapshot = false,
              reverse = Reverse,
              write_lock = WriteLock,
              st = InSt
@@ -1255,6 +1241,10 @@ iter_append_([], _Tx, _St, _TabPfx, _KeysOnly, _Ms, _DataFun, AddCount, Acc) ->
     {Acc, AddCount};
 iter_append_([{K, V} | Rest], Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) ->
     case mfdb_lib:decode_key(TabPfx, K) of
+        {idx, Idx} when is_function(DataFun, 2) ->
+            %% This is a matched index with a supplied fun
+            NAcc = DataFun(Idx, Acc),
+            iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
         {idx, Idx} when is_function(DataFun, 3) ->
             %% This is a matched index with a supplied fun
             NAcc = DataFun(St, Idx, Acc),
@@ -1292,6 +1282,10 @@ iter_append_([{K, V} | Rest], Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount, A
                 [Match] when DataFun =:= undefined ->
                     %% Record matched specification, but not a fold operation
                     NAcc = [Match | Acc],
+                    iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
+                [Match] when is_function(DataFun, 2) ->
+                    %% Record matched specification, is a fold operation, apply the supplied DataFun
+                    NAcc = DataFun(Match, Acc),
                     iter_append_(Rest, Tx, St, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
                 [Match] when is_function(DataFun, 3) ->
                     %% Record matched specification, is a fold operation, apply the supplied DataFun
@@ -1477,3 +1471,303 @@ consult_stream(Fd, Line, Fun, Acc) ->
 consult_stream(Fd, Fun, Acc) ->
     _ = epp:set_encoding(Fd),
     consult_stream(Fd, 1, Fun, Acc).
+
+%%%  New fold impl %%%%
+
+%% @doc Applies a function to all records in the table
+%% InnerFun is either a 2-arity (read-only) or 3-arity (grabs read/write locks) function with specification:
+%%   Fun(Record :: tuple(), Accumulator :: any())
+%%     - the 2-arity fold is read-only
+%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
+%%     - with the 3-arity function read/write locks are taken over each step
+%%     - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
+%%  Since InnerFun is applied _before_ the transaction is committed you
+%%  should not perform external operations using the records within the InnerFun
+%%  A contrived example:
+%%    InnerFun = fun(Tx, #test{id = Id} = R, Deleted) ->
+%%                   case Id > 5 andalso Id < 10 of
+%%                       true ->
+%%                           ok = mfdb:delete(Tx, Id),
+%%                           [Id | Deleted];
+%%                       false ->
+%%                           Deleted
+%%                   end
+%%                end,
+%%    AfterRecs = case mfdb:fold(test, InnerFun, []) of
+%%                    {ok, Recs0} -> Recs0;
+%%                    {error, Err, Recs0} -> Recs0
+%%                end,
+%%    %% Now do external operations...
+%%    lists:foreach(
+%%        fun(Rec) ->
+%%          case my_external_op(Rec) of
+%%            ok ->
+%%              ok;
+%%            error ->
+%%              %% safely write back to db
+%%              mfdb:insert(test, Rec)
+%%          end
+%%        end, AfterRecs).
+%% @end
+-spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any()) -> any().
+fold(Table, InnerFun, InnerAcc)
+  when is_atom(Table) andalso
+       (is_function(InnerFun, 3) orelse
+        is_function(InnerFun, 2)) ->
+    MatchSpec = [{'_',[],['$_']}],
+    St0 = mfdb_manager:st(Table),
+    St = case is_function(InnerFun, 3) of
+             true -> St0#st{write_lock = true};
+             false -> St0
+         end,
+    ffold_type_(St, InnerFun, InnerAcc, MatchSpec).
+
+%% @doc Applies a function to all records in the table matching the MatchSpec
+%% InnerFun is either a 2-arity (read-only) or 3-arity (grabs read/write locks) function with specification:
+%%   Fun(Record :: tuple(), Accumulator :: any())
+%%     - the 2-arity fold is read-only
+%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
+%%     - with the 3-arity function read/write locks are taken over each step
+%%     - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
+%%  Since InnerFun is applied _before_ the transaction is committed you
+%%  should not perform external operations using the records within the InnerFun
+%%  A contrived example:
+%%    InnerFun = fun(Tx, #test{id = Id} = R, Deleted) ->
+%%                   ok = mfdb:delete(Tx, Id),
+%%                   [Id | Deleted]
+%%                end,
+%%    Ms = [{#test{id = '$1', _ = '_'}, [{'>', '$1', 5}, {'<', '$1', 10}], ['$_']}],
+%%    AfterRecs = case mfdb:fold(test, InnerFun, [], Ms) of
+%%                    {ok, Recs0} -> Recs0;
+%%                    {error, Err, Recs0} -> Recs0
+%%                end,
+%%    %% Now do external operations...
+%%    lists:foreach(
+%%        fun(Rec) ->
+%%          case my_external_op(Rec) of
+%%            ok ->
+%%              ok;
+%%            error ->
+%%              %% safely write back to db
+%%              mfdb:insert(test, Rec)
+%%          end
+%%        end, AfterRecs).
+%% @end
+-spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) -> any().
+fold(Table, InnerFun, InnerAcc, MatchSpec) ->
+    St0 = mfdb_manager:st(Table),
+    St = case is_function(InnerFun, 3) of
+             true -> St0#st{write_lock = true};
+             false -> St0
+         end,
+    ffold_type_(St, InnerFun, InnerAcc, MatchSpec).
+
+ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0) ->
+    %%CompiledMs = ets:match_spec_compile(MatchSpec),
+    {Guards, Binds, Ms} =
+        case MatchSpec0 of
+            [{ {{_V, '$1'}} , G, _}] ->
+                {G, [{1, ['$1']}], MatchSpec0};
+            [{HP, G, MsRet}] ->
+                {NewHP, NewGuards} = ms_rewrite(HP, G),
+                NewMs = [{NewHP, NewGuards, MsRet}],
+                {NewGuards, bound_in_headpat(NewHP), NewMs};
+            _ ->
+                {[], [], MatchSpec0}
+        end,
+    Indexes = [I || #idx{} = I <- tuple_to_list(Index)],
+    RangeGuards = range_guards(Guards, Binds, Indexes, []),
+    {PkStart, PkEnd} = primary_table_range_(RangeGuards),
+    case idx_sel(RangeGuards, Indexes, St) of
+        {use_index, {_IdxPos, {Start, End, Match, Guard}}} = _IdxSel ->
+            IdxMs0 = [{Match, Guard, ['$_']}],
+            IdxMs = ets:match_spec_compile(IdxMs0),
+            RecMs = ets:match_spec_compile(Ms),
+            RecMatchFun = ffold_rec_match_fun_(TabPfx, RecMs, UserFun),
+            DataFun = ffold_idx_match_fun_(St, IdxMs, RecMatchFun),
+            ffold_indexed_(St, DataFun, UserAcc, Start, End);
+        no_index ->
+            %% error_logger:info_msg(" PkStart: ~p PkEnd ~p", [ PkStart, PkEnd]),
+            ffold_loop_init_(St, UserFun, UserAcc, ets:match_spec_compile(Ms), PkStart, PkEnd)
+    end.
+
+ffold_idx_match_fun_(#st{} = St, IdxMs, RecMatchFun) ->
+    fun({idx, {{IdxVal, PkVal}} = R}, IAcc) ->
+               case ets:match_spec_run([R], IdxMs) of
+                   [] ->
+                       %% Did not match
+                       IAcc;
+                   [{{IdxVal, PkVal}}] ->
+                       %% Matched
+                       RecMatchFun(St, PkVal, IAcc)
+               end
+       end.
+
+ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
+    fun(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, PkVal, Acc0) ->
+            EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
+            case erlfdb:get(Db, EncKey) of
+                not_found ->
+                    %% This should only happen with a dead index
+                    %% entry (data deleted after we got index)
+                    Acc0;
+                EncVal0 ->
+                    Rec0 = mfdb_lib:decode_val(Db, TabPfx, EncVal0),
+                    case ets:match_spec_run([Rec0], RecMs) of
+                        [] ->
+                            %% Did not match specification
+                            Acc0;
+                        [Matched] when WLock =:= false ->
+                            %% Matched specification
+                            UserFun(Matched, Acc0);
+                        [_Matched] when WLock =:= true ->
+                            %% Matched specification
+                            Tx = erlfdb:create_transaction(Db),
+                            ok = erlfdb:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+                            ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+                            case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+                                not_found ->
+                                    %% move on.... Already deleted by something else
+                                    ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                                    Acc0;
+                                EncVal ->
+                                    Rec2 = mfdb_lib:decode_val(Db, TblPfx, EncVal),
+                                    NextAcc = try
+                                                  [Match] = ets:match_spec_run([Rec2], RecMs),
+                                                  NewAcc = UserFun(St#st{db = Tx}, Match, Acc0),
+                                                  ok = erlfdb:wait(erlfdb:commit(Tx)),
+                                                  NewAcc
+                                              catch
+                                                  _E:_M:_Stack ->
+                                                      ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                                                      Acc0
+                                              end,
+                                    NextAcc
+                            end
+                    end
+            end
+    end.
+
+ffold_indexed_(#st{db = Db, pfx = TabPfx} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
+    case erlfdb:get_range(Db, Start, End, [{limit, 1}]) of
+        [] ->
+            [];
+        [{LastKey, _}] ->
+            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
+            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+    end.
+
+ffold_indexed_cont_(#st{db = Db, pfx = TabPfx} = St, MatchFun, InAcc, Start0, End) ->
+    Start = erlfdb_key:first_greater_than(Start0),
+    case erlfdb:get_range(Db, Start, End, [{limit, 2}]) of
+        [] ->
+            InAcc;
+        [{Start0, _}] ->
+            InAcc;
+        [{Start0, _}, {LastKey, _}] ->
+            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
+            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+        [{LastKey, _}, _] ->
+            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
+            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+        [{LastKey, _}] ->
+            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
+            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+    end.
+
+ffold_loop_init_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkStart, PkEnd) ->
+    case first_(St, PkStart) of
+        '$end_of_table' ->
+            InnerAcc;
+        KeyValue ->
+            ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, KeyValue)
+    end.
+
+ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, '$end_of_table') when is_list(InnerAcc) ->
+    lists:reverse(InnerAcc);
+ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, '$end_of_table') ->
+    InnerAcc;
+ffold_loop_cont_(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, InnerFun, InnerAcc, Ms, PkEnd, {EncKey, Key, Rec}) ->
+    case ets:match_spec_run([Rec], Ms) of
+        [] ->
+            %% Record did not match specification
+            ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, next_(St, Key, PkEnd));
+        [_Match] when is_function(InnerFun, 3) andalso WLock =:= true ->
+            %% Record matched specification and we need to lock the record
+            Tx = erlfdb:create_transaction(Db),
+            ok = erlfdb:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+            ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+            case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+                not_found ->
+                    %% move on.... Already deleted by something else
+                    ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                    ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, next_(St, Key, PkEnd));
+                EncVal ->
+                    Rec2 = mfdb_lib:decode_val(Db, TblPfx, EncVal),
+                    NextAcc = try
+                                  [Match] = ets:match_spec_run([Rec2], Ms),
+                                  NewAcc = InnerFun(St#st{db = Tx}, Match, InnerAcc),
+                                  ok = erlfdb:wait(erlfdb:commit(Tx)),
+                                  NewAcc
+                              catch
+                                  _E:_M:_Stack ->
+                                      ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                                      InnerAcc
+                              end,
+                    ffold_loop_cont_(#st{db = Db} = St, InnerFun, NextAcc, Ms, PkEnd, next_(St, Key, PkEnd))
+            end;
+        [Match] when is_function(InnerFun, 2) andalso WLock =:= false ->
+            %% Record matched specification, is a fold operation, apply the supplied DataFun
+            NewAcc = InnerFun(Match, InnerAcc),
+            ffold_loop_cont_(#st{db = Db} = St, InnerFun, NewAcc, Ms, PkEnd, next_(St, Key, PkEnd))
+    end.
+
+range_start(TabPfx, {gt, X}) ->
+    {mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}), gt};
+range_start(TabPfx, {gte, X}) ->
+    {mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}), gteq};
+range_start(TabPfx, X) when X =:= '_' orelse X =:= <<"~">> ->
+    mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, X});
+range_start(TabPfx, X) ->
+    mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}).
+
+range_end(TabPfx, {lt, X}) ->
+    {mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}), lteq};
+range_end(TabPfx, {lte, X}) ->
+    erlfdb_key:strinc(mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}));
+range_end(TabPfx, X) when X =:= '_' orelse X =:= <<"~">> ->
+    erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, X}));
+range_end(TabPfx, X) ->
+    erlfdb_key:strinc(mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X})).
+
+first_(#st{db = Db, pfx = TabPfx}, PkStart) ->
+    StartKey = range_start(TabPfx, PkStart),
+    EndKey = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})),
+    %% error_logger:info_msg("StartKey: ~p EndKey: ~p", [StartKey, EndKey]),
+    case erlfdb:get_range(Db, StartKey, EndKey, [{limit, 1}]) of
+        [] ->
+            '$end_of_table';
+        [{EncKey, Val}] ->
+            {EncKey, mfdb_lib:decode_key(TabPfx, EncKey), mfdb_lib:decode_val(Db, TabPfx, Val)}
+    end.
+
+next_(#st{db = Db, pfx = TabPfx}, PrevKey, PkEnd) ->
+    SKey = range_start(TabPfx, PrevKey),
+    EKey = range_end(TabPfx, PkEnd),
+    case erlfdb:get_range(Db, SKey, EKey, [{limit, 2}]) of
+        [] ->
+            '$end_of_table';
+        [{K, V}] ->
+            case mfdb_lib:decode_key(TabPfx, K) of
+                PrevKey ->
+                    '$end_of_table';
+                OutKey ->
+                    {K, OutKey, mfdb_lib:decode_val(Db, TabPfx, V)}
+            end;
+        [{K0, V0}, {K1, V1}] ->
+            Args = [{K0, mfdb_lib:decode_key(TabPfx, K0), V0},
+                    {K1, mfdb_lib:decode_key(TabPfx, K1), V1}],
+            {EncKey, OutKey, OutVal} = hd([P || {_, NKey, _} = P <- Args,
+                                                NKey =/= PrevKey]),
+            {EncKey, OutKey, mfdb_lib:decode_val(Db, TabPfx, OutVal)}
+    end.

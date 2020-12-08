@@ -737,8 +737,13 @@ expires({Period, Inc} = P)
         Err ->
             throw(Err)
     end;
-expires(_) ->
-    throw(invalid_expires).
+expires(_Expires) ->
+    try throw(invalid_expires)
+    catch
+        _:_:St ->
+            error_logger:error_msg("Invalid expires: ~p ~p", [_Expires, St]),
+            throw(invalid_expires)
+    end.
 
 i2s({minutes, M}) -> (M * 60);
 i2s({hours, H}) -> (H * 60 * 60);

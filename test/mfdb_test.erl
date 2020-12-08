@@ -24,6 +24,7 @@ t_011_test_() -> {timeout, 10, fun() -> select_no_continuation() end}.
 t_012_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
 t_013_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
 t_014_test_() -> {timeout, 10, fun() -> check_field_types() end}.
+t_015_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -62,8 +63,8 @@ basic_lookup() ->
 
 verify_records() ->
     IdSumIn = lists:sum([X || X <- lists:seq(1, 50)]),
-    IdSumOut = mfdb:fold(test_a, fun(_Tx, #test_a{id = X}, Acc) -> Acc + X end, 0),
-    ?assertEqual({ok, IdSumIn}, IdSumOut).
+    IdSumOut = mfdb:fold(test_a, fun(#test_a{id = X}, Acc) -> Acc + X end, 0),
+    ?assertEqual(IdSumIn, IdSumOut).
 
 counter_inc_dec() ->
     ?assertEqual(50, mfdb:update_counter(test_a, my_counter, 50)),
@@ -142,6 +143,30 @@ check_field_types() ->
     ?assertEqual({error,{value,name_atom,not_a_binary}}, Error1),
     Error2 = mfdb:insert(test_a, #test{id = 1, value = <<"value">>}),
     ?assertEqual({error,invalid_record}, Error2).
+
+parallel_fold_delete() ->
+    %% Multiple processes folding over and deleting data from a table
+    %% Ensure only 500 records (count for table) are actually processed
+    _ = mfdb:clear_table(test_a),
+    [spawn(fun() -> ok = mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) end) || X <- lists:seq(1,500)],
+    timer:sleep(500),
+    FoldDeleteFun = fun(Tx, #test_a{id = Id}, Acc) -> ok = mfdb:delete(Tx, Id), Acc + 1 end,
+    Self = self(),
+    Fold = fun(X) -> Self ! {X, mfdb:fold(test_a, FoldDeleteFun, 0)} end,
+    Ids = lists:seq(1,5),
+    [spawn(fun() -> Fold(X) end) || X <- Ids],
+    Results = recv(Ids, []),
+    ?assertEqual(500, lists:sum([C || {_, C} <- Results])).
+
+recv([], Acc) ->
+    Acc;
+recv(Ids, Acc) ->
+    receive
+        {X, _Cnt} = Msg ->
+            recv(lists:delete(X, Ids), [Msg | Acc])
+    after 60000 ->
+        throw(timeout)
+    end.
 
 kg(L, K, D) ->
     case lists:keyfind(K, 1, L) of

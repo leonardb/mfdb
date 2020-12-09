@@ -1553,7 +1553,7 @@ fold(Table, InnerFun, InnerAcc)
 %%          end
 %%        end, AfterRecs).
 %% @end
--spec fold(Table :: table_name(), InnerFun :: function(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) -> any().
+-spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) -> any().
 fold(Table, InnerFun, InnerAcc, MatchSpec) ->
     St0 = mfdb_manager:st(Table),
     St = case is_function(InnerFun, 3) of

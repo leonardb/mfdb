@@ -52,10 +52,8 @@
 
 -export([status/0]).
 
-%% This is really just here to prevent dialyzer
-%% from complaining about the Limit match clauses
-%% for non-50 value cases
--export([do_select_/3]).
+%% @private
+-export([do_import_/3]).
 
 %% gen_server API
 -export([start_link/1,
@@ -70,9 +68,9 @@
 -define(REAP_POLL_INTERVAL, 500).
 
 -type dbrec() :: tuple().
--type foldfun() :: fun((tx(), dbrec(), any()) -> any()) | fun((dbrec(), any()) -> any()).
+-type foldfun() :: fun((fdb_tx(), dbrec(), any()) -> any()) | fun((dbrec(), any()) -> any()).
 
--export_type([dbrec/0, tx/0, foldfun/0]).
+-export_type([dbrec/0, fdb_tx/0, foldfun/0]).
 
 %% @doc Starts the management server for a table
 -spec connect(Table :: table_name()) -> ok | {error, no_such_table}.
@@ -145,12 +143,12 @@ table_list() ->
 %% A mnesia-style select returning a continuation()
 %% Returns are chunked into buckets of 50 results
 %% @end
--spec select(Table :: table_name(), Matchspec :: ets:match_spec()) ->  {error, atom()} | {[] | list(any()), continuation() | '$end_of_table'}.
+-spec select(Table :: table_name(), Matchspec :: ets:match_spec()) ->  {[] | list(any()), continuation() | '$end_of_table'}.
 select(Table, Matchspec) when is_atom(Table) ->
     select_(Table, Matchspec, 50).
 
 %% @doc Select continuation
--spec select(Cont :: continuation()) -> {error, atom()} | {[] | list(any()), continuation() | '$end_of_table'}.
+-spec select(Cont :: continuation()) -> {[] | list(any()), continuation() | '$end_of_table'}.
 select(Cont) ->
     case Cont of
         {_, '$end_of_table'} ->
@@ -162,10 +160,6 @@ select(Cont) ->
         Cont when is_function(Cont) ->
             Cont()
     end.
-
-%% @private
-do_select_(Table, Matchspec, Limit) when is_atom(Table) ->
-    select_(Table, Matchspec, Limit).
 
 %% @doc Lookup a record by Primary Key
 -spec lookup(Table :: table_name(), PkValue :: any()) -> {ok, tuple()} | {error, not_found}.
@@ -197,7 +191,7 @@ index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
     end.
 
 %% @doc insert/replace a record. Types of values are checked if table has typed fields.
--spec insert(TableOrTx :: table_name() | tx(), ObjectTuple :: tuple()) -> ok | {error, any()}.
+-spec insert(TableOrTx :: table_name() | fdb_tx(), ObjectTuple :: tuple()) -> ok | {error, any()}.
 insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
     #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
     Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, ObjectTuple),
@@ -307,7 +301,7 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
 %%    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
 
 %% @doc Delete a record from the table
--spec delete(TxOrTable :: table_name() | tx(), PkVal :: any()) ->  ok.
+-spec delete(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->  ok.
 delete(Table, PkValue) when is_atom(Table) ->
     #st{} = St = mfdb_manager:st(Table),
     mfdb_lib:delete(St, PkValue);
@@ -373,7 +367,7 @@ handle_call(clear_table, _From, #{table := Table} = State) ->
 handle_call({import, SourceFile}, From, #{table := Table} = State) ->
     %% potentially long-running operation. Caller waits 'infinity'
     ImportId = erlang:make_ref(),
-    {Pid, Ref} = spawn_monitor(fun() -> do_import_(Table, SourceFile, ImportId) end),
+    {Pid, Ref} = spawn_monitor(?MODULE, do_import_, [Table, SourceFile, ImportId]),
     OldWaiters = maps:get(waiters, State, []),
     NewWaiters = [{ImportId, Pid, Ref, From} | OldWaiters],
     {noreply, State#{waiters => NewWaiters}};
@@ -1017,14 +1011,9 @@ pk_to_range(TabPfx, 'end', _) ->
 %% @private
 do_select(#st{pfx = TabPfx} = St, MS, PkStart, PkEnd, Limit) ->
     KeysOnly = needs_key_only(MS),
-    Keypat = case (PkStart =/= undefined orelse PkEnd =/= undefined) of
-                 true  ->
-                     RangeStart = pk_to_range(TabPfx, start, PkStart),
-                     RangeEnd = pk_to_range(TabPfx, 'end', PkEnd),
-                     {range, RangeStart, RangeEnd};
-                 false ->
-                     mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})
-             end,
+    RangeStart = pk_to_range(TabPfx, start, PkStart),
+    RangeEnd = pk_to_range(TabPfx, 'end', PkEnd),
+    Keypat = {range, RangeStart, RangeEnd},
     CompiledMs = ets:match_spec_compile(MS),
     Iter = iter_(St, Keypat, KeysOnly, CompiledMs, undefined, [], Limit),
     do_iter(Iter, Limit, []).
@@ -1042,50 +1031,31 @@ do_indexed_select(#st{pfx = TabPfx} = St, MS, {_IdxPos, {Start, End, Match, Guar
     do_iter(Iter, Limit, []).
 
 %% @private
-do_iter('$end_of_table', Limit, Acc) when Limit =:= 0 ->
+do_iter('$end_of_table', _Limit, Acc) ->
     {mfdb_lib:sort(Acc), '$end_of_table'};
-do_iter({Data, '$end_of_table'}, Limit, Acc) when Limit =:= 0 ->
-    {mfdb_lib:sort(lists:append(Acc, Data)), '$end_of_table'};
-do_iter({Data, Iter}, Limit, Acc) when Limit =:= 0 andalso is_function(Iter) ->
-    NAcc = mfdb_lib:sort(lists:append(Acc, Data)),
-    case Iter() of
-        '$end_of_table' ->
-            NAcc;
-        {_, '$end_of_table'} = NIter ->
-            do_iter(NIter, Limit, NAcc);
-        {_, ?IS_ITERATOR} = NIter ->
-            do_iter(NIter, Limit, NAcc)
-    end;
-do_iter('$end_of_table', Limit, Acc) when Limit > 0 ->
-    {mfdb_lib:sort(Acc), '$end_of_table'};
-do_iter({Data, '$end_of_table'}, Limit, Acc)
-  when Limit > 0 andalso
-       is_list(Data) andalso
+do_iter({Data, '$end_of_table'}, _Limit, Acc)
+  when is_list(Data) andalso
        is_list(Acc) ->
     {mfdb_lib:sort(lists:append(Acc, Data)), '$end_of_table'};
-do_iter({Data, '$end_of_table'}, Limit, _Acc)
-  when Limit > 0 ->
+do_iter({Data, '$end_of_table'}, _Limit, _Acc) ->
     {Data, '$end_of_table'};
 do_iter({[], Iter}, Limit, Acc)
-  when Limit > 0 andalso
-       is_function(Iter, 0) ->
+  when is_function(Iter, 0) ->
     do_iter(Iter(), Limit, Acc);
-do_iter({Data, Iter}, Limit, Acc)
-  when Limit > 0 andalso
-       is_function(Iter) andalso
+do_iter({Data, Iter}, _Limit, Acc)
+  when is_function(Iter) andalso
        is_list(Data) andalso
        is_list(Acc) ->
     NAcc = mfdb_lib:sort(lists:append(Acc, Data)),
     {NAcc, Iter};
-do_iter({Data, Iter}, Limit, _Acc)
-  when Limit > 0 andalso
-       is_function(Iter) ->
+do_iter({Data, Iter}, _Limit, _Acc)
+  when is_function(Iter) ->
     {Data, Iter}.
 
 %% @private
--spec iter_(St :: tx(), StartKey :: any(), KeysOnly :: boolean(), Ms :: undefined | ets:comp_match_spec(), DataFun :: undefined | function(), InAcc :: list(), DataLimit :: pos_integer()) ->
-          {list(), '$end_of_table'} | {list(), ?IS_ITERATOR}.
-iter_(#st{db = Db, pfx = TabPfx} = InSt, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) ->
+-spec iter_(St :: st(), StartKey :: any(), KeysOnly :: boolean(), Ms :: undefined | ets:comp_match_spec(), DataFun :: undefined | function(), InAcc :: list(), DataLimit :: pos_integer()) ->
+          {list(), '$end_of_table' | continuation()}.
+iter_(#st{db = Db, pfx = TabPfx}, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) ->
     Reverse = 0, %% we're not iterating in reverse
     {SKey, EKey} = iter_start_end_(TabPfx, StartKey0),
     St0 = #iter_st{
@@ -1172,10 +1142,6 @@ iter_append_([], _Tx, _TabPfx, _KeysOnly, _Ms, _DataFun, AddCount, Acc) ->
     {Acc, AddCount};
 iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) ->
     case mfdb_lib:decode_key(TabPfx, K) of
-        {idx, Idx} when is_function(DataFun, 2) ->
-            %% This is a matched index with a supplied fun
-            NAcc = DataFun(Idx, Acc),
-            iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
         {idx, Idx} when is_function(DataFun, 3) ->
             %% This is a matched index with a supplied fun
             NAcc = DataFun(Tx, Idx, Acc),
@@ -1196,10 +1162,6 @@ iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) 
             %% This is an actual record, not an index
             Rec = mfdb_lib:decode_val(Tx, TabPfx, V),
             case Ms =/= undefined andalso ets:match_spec_run([Rec], Ms) of
-                false  when is_function(DataFun, 2) ->
-                    %% Record matched specification, is a fold operation, apply the supplied DataFun
-                    NAcc = DataFun(Rec, Acc),
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
                 false  when is_function(DataFun, 3) ->
                     %% Record matched specification, is a fold operation, apply the supplied DataFun
                     NAcc = DataFun(Tx, Rec, Acc),
@@ -1211,12 +1173,8 @@ iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) 
                     %% Record did not match specification
                     iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc);
                 [Match] when DataFun =:= undefined ->
-                    %% Record matched specification, but not a fold operation
+                    %% Record matched specification, but not a index operation
                     NAcc = [Match | Acc],
-                    iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
-                [Match] when is_function(DataFun, 2) ->
-                    %% Record matched specification, is a fold operation, apply the supplied DataFun
-                    NAcc = DataFun(Match, Acc),
                     iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
                 [Match] when is_function(DataFun, 3) ->
                     %% Record matched specification, is a fold operation, apply the supplied DataFun
@@ -1232,25 +1190,20 @@ iter_val_(false, _Key, Rec) ->
     Rec.
 
 %% @private
-iter_start_end_(TblPfx, StartKey0) ->
-    case StartKey0 of
-        {range, S0, E0} ->
-            S = case S0 of
-                    {S1k, S1} when S1k =:= fdb orelse S1k =:= fdbr ->
-                        erlfdb_key:first_greater_or_equal(S1);
-                    S0 ->
-                        mfdb_lib:encode_prefix(TblPfx, {?DATA_PREFIX, S0})
-                end,
-            E = case E0 of
-                    {E1k, E1} when E1k =:= fdb orelse E1k =:= fdbr ->
-                        E1;
-                    E0 ->
-                        erlfdb_key:strinc(mfdb_lib:encode_prefix(TblPfx, {?DATA_PREFIX, E0}))
-                end,
-            {S, E};
-        StartKey0 ->
-            {erlfdb_key:first_greater_than(StartKey0), erlfdb_key:strinc(StartKey0)}
-    end.
+iter_start_end_(TblPfx, {range, S0, E0}) ->
+    S = case S0 of
+            {S1k, S1} when S1k =:= fdb orelse S1k =:= fdbr ->
+                erlfdb_key:first_greater_or_equal(S1);
+            S0 ->
+                mfdb_lib:encode_prefix(TblPfx, {?DATA_PREFIX, S0})
+        end,
+    E = case E0 of
+            {E1k, E1} when E1k =:= fdb orelse E1k =:= fdbr ->
+                E1;
+            E0 ->
+                erlfdb_key:strinc(mfdb_lib:encode_prefix(TblPfx, {?DATA_PREFIX, E0}))
+        end,
+    {S, E}.
 
 %% @private
 iter_transaction_(#iter_st{db = Db, tx = Tx} = St) ->
@@ -1304,15 +1257,10 @@ iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
     end.
 
 %% @private
-hit_data_limit_(_DataCount, 0) ->
-    false;
 hit_data_limit_(DataCount, IterLimit) ->
     DataCount + 1 > IterLimit.
 
 %% @private
-rows_more_last_(0, _DataCount, RawRows, _Count, HasMore0) ->
-    {LastKey0, _} = lists:last(RawRows),
-    {RawRows, HasMore0, LastKey0};
 rows_more_last_(DataLimit, DataCount, RawRows, Count, HasMore0)
   when (DataLimit - DataCount) > Count ->
     {LastKey0, _} = lists:last(RawRows),
@@ -1324,7 +1272,7 @@ rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
     {Rows0, NHasMore, LastKey0}.
 
 %% @doc The do_import is based off of the file:consult/1 code which reads in terms from a file
-%% @private
+%% @hidden
 do_import_(Table, SourceFile, ImportId) ->
     #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
     TtlPos = case Ttl of
@@ -1622,17 +1570,17 @@ ffold_loop_init_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkStart, PkEnd) ->
             ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyValues)
     end.
 
-ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, _LastKey, '$end_of_table') when is_list(InnerAcc) ->
-    lists:reverse(InnerAcc);
-ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, _LastKey, '$end_of_table') ->
-    InnerAcc;
 ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
     NewAcc = ffold_loop_recs(KeyVals, St, InnerFun, Ms, InnerAcc),
     case next_(St, LastKey, PkEnd) of
+        '$end_of_table' when is_list(NewAcc) ->
+            lists:reverse(NewAcc);
         '$end_of_table' ->
             NewAcc;
+        [] when is_list(NewAcc) ->
+            lists:reverse(NewAcc);
         [] ->
-            NewAcc;
+            lists:reverse(NewAcc);
         KeyValues ->
             {NewLastKey, _, _} = lists:last(KeyValues),
             ffold_loop_cont_(St, InnerFun, NewAcc, Ms, PkEnd, NewLastKey, KeyValues)

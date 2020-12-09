@@ -81,16 +81,12 @@ handle_call({delete_table, Tab0}, _From, S) ->
 handle_call({create_table, Table, Options}, _From, S) ->
     R = case lists:keyfind(record, 1, Options) of
             {record, Record} ->
-                case indexes_(Options) of
-                    {ok, Indexes} ->
-                        case ttl_(Options, Record) of
-                            {ok, Ttl} ->
-                                create_table_(atom_to_binary(Table), Record, Indexes, Ttl);
-                            TtlErr ->
-                                TtlErr
-                        end;
-                    IdxErr ->
-                        IdxErr
+                {ok, Indexes} = indexes_(Options),
+                case ttl_(Options, Record) of
+                    {ok, Ttl} ->
+                        create_table_(atom_to_binary(Table), Record, Indexes, Ttl);
+                    TtlErr ->
+                        TtlErr
                 end;
             false ->
                 {error, missing_record_definition}

@@ -225,7 +225,7 @@ notify_([{callback, Mod, Fun} | Rest], Val) ->
             {T, K, A, V} ->
                 {T, K, A, V}
         end,
-    try Mod:Fun(binary_to_existing_atom(Table), Key, Action, Value)
+    try Mod:Fun(Table, Key, Action, Value)
     catch
         E:M:St ->
             error_logger:error_msg("Callback to ~p:~p/4 failed: ~p",

@@ -51,8 +51,8 @@
 -define(SORT(RecName, L), mfdb_lib:sort(RecName, L)).
 -define(NOOP_SENTINAL, '__nochange__').
 
--type db() :: {erlfdb_database, reference()}.
--type tx() :: {erlfdb_transaction, reference()}.
+-type fdb_db() :: {erlfdb_database, reference()}.
+-type fdb_tx() :: {erlfdb_transaction, reference()}.
 -type selector() :: {binary(), gteq | gt | lteq | lt} | {binary(), gteq | gt | lteq | lt, any()}.
 -type idx() :: {atom(), index, {pos_integer(), atom()}}.
 
@@ -62,7 +62,11 @@
 
 -define(TABPROC(Table), {via, gproc, {n, l, {mfdb, Table}}}).
 
--type ttl()         :: {minutes | hours | days | unix, pos_integer()}.
+-type field_ttl()   :: {field, pos_integer()}.
+-type ttl_period()  :: {minutes | hours | days | unix, pos_integer()}.
+-type ttl_periods() :: list(ttl_period()).
+-type table_ttl()   :: {table, ttl_period()}.
+-type ttl()         :: field_ttl() | table_ttl().
 -type ttls()        :: list(ttl()).
 -type table_name()  :: atom().
 -type field_name()  :: atom().
@@ -109,7 +113,7 @@
          record_name                    :: atom(),
          fields                         :: list(field()),
          index                          :: tuple(), %% a tuple of {undefined | #idx{}, ...}
-         db                             :: db(),
+         db                             :: fdb_db() | fdb_tx(),
          table_id                       :: binary(),
          pfx                            :: binary(), %% <<(bit_size(KeyId) + bit_size(TableId) + 16):8, (bit_size(KeyId)):8, KeyId/binary, (bit_size(TableId)):8, TableId/binary>>,
          hca_ref,   %% opaque :: #erlfdb_hca{} record used for mfdb_part() keys    :: erlfdb_hca:create(<<"parts_", TableId/binary>>).
@@ -118,12 +122,14 @@
          write_lock     = false         :: boolean()
         }).
 
+-type st() :: #st{}.
+
 -record(info, {k, v}).
 
 -record(iter_st,
         {
-         db :: db(),
-         tx :: undefined | tx(),
+         db :: fdb_db(),
+         tx :: undefined | fdb_tx(),
          pfx :: binary(),
          data_count = 0 :: non_neg_integer(),
          data_limit = 0 :: non_neg_integer(),

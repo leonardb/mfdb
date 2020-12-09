@@ -220,10 +220,6 @@ ttl_add(?IS_TX = Tx, TabPfx, TtlDatetime0, Key) ->
 
 ttl_remove(_Tx, _TabPfx, undefined, _Key) ->
     ok;
-ttl_remove(?IS_DB = Db, TabPfx, TtlDatetime, Key) ->
-    Tx = erlfdb:create_transaction(Db),
-    ok = ttl_remove(Tx, TabPfx, TtlDatetime, Key),
-    erlfdb:wait(erlfdb:commit(Tx));
 ttl_remove(?IS_TX = Tx, TabPfx, _TtlDatetime, Key) ->
     TtlK2T = encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}),
     case erlfdb:wait(erlfdb:get(Tx, TtlK2T)) of
@@ -274,11 +270,12 @@ mk_tx(#st{db = ?IS_DB = Db, write_lock = true} = St) ->
     FdbTx = erlfdb:create_transaction(Db),
     St#st{db = FdbTx}.
 
+-spec delete(#st{}, any()) -> ok.
 delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
     ok = delete(NewSt, PkValue),
-    erlfdb:wait(erlfdb:commit(FdbTx));
+    ok = erlfdb:wait(erlfdb:commit(FdbTx));
 delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
     %% deleting a data item
     EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
@@ -690,7 +687,7 @@ sort(RecName, [T | _] = L) when is_tuple(T) andalso element(1, T) =:= RecName ->
 sort(_RecName, L) ->
     lists:sort(L).
 
--spec expires(never | undefined | ttls() | ttl()) -> never | calendar:datetime().
+-spec expires(never | undefined | ttl_periods() | ttl_period()) -> never | calendar:datetime().
 expires(undefined) ->
     %% never expires
     never;

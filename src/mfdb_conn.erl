@@ -74,12 +74,12 @@ load_fdb_nif_(#conn{tls_key_path = KeyPath, tls_cert_path = CertPath, tls_ca_pat
     end.
 
 %% @doc Open and return an erlfdb database connection
--spec connection() -> db().
+-spec connection() -> fdb_db().
 connection() ->
     #conn{} = Conn = persistent_term:get(mfdb_conn),
     connection(Conn).
 
--spec connection(#conn{}) -> db().
+-spec connection(#conn{}) -> fdb_db().
 connection(#conn{cluster = Cluster} = Conn) ->
     ok = load_fdb_nif_(Conn),
     {erlfdb_database, _} = Db = erlfdb:open(Cluster),

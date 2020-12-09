@@ -4,8 +4,10 @@
 
 -record(test_a, {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
 -record(test,   {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
+-record(test_idx, {id :: integer(), value :: integer()}).
 -define(TEST_A, {test_a, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
 -define(TEST_B, {test_b, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
+-define(TEST_IDX, {test_idx, [{id, integer}, {value, integer}]}).
 -define(APP_KEY, <<"cb136a3d-de40-4a85-bd10-bb23f6f1ec2a">>).
 
 %% This sux, but it's the only way I can get around random timeout issues
@@ -25,6 +27,9 @@ t_013_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
 t_014_test_() -> {timeout, 10, fun() -> check_field_types() end}.
 t_015_test_() -> {timeout, 60, fun() -> fold_simple() end}.
 t_016_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
+t_017_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
+t_018_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
+t_019_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -167,6 +172,38 @@ parallel_fold_delete() ->
     Results = recv(Ids, []),
     ?assertEqual(500, lists:sum([C || {_, C} <- Results])).
 
+indexed_select_one() ->
+    _ = mfdb:delete_table(test_idx),
+    ok = mfdb:create_table(test_idx, [{record, ?TEST_IDX}, {indexes, [3]}]),
+    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,500)],
+    timer:sleep(500),
+    {D, '$end_of_table'} = mfdb:select(test_idx, [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 490}, {'<', '$1', 496}], ['$_']}]),
+    NumRes = length(D),
+    ?assertEqual(5, NumRes).
+
+indexed_select_continuation() ->
+    _ = mfdb:delete_table(test_idx),
+    ok = mfdb:create_table(test_idx, [{record, ?TEST_IDX}, {indexes, [3]}]),
+    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,500)],
+    timer:sleep(500),
+    WrapFun = fun WrapFun({D, '$end_of_table'}, InAcc) ->
+                      lists:append(InAcc, D);
+                  WrapFun({D, Cont}, InAcc) ->
+                      WrapFun(mfdb:select(Cont), lists:append(InAcc, D))
+              end,
+    Res = WrapFun(mfdb:select(test_idx, [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 0}], ['$_']}]), []),
+    NumRes = length(Res),
+    ?assertEqual(500, NumRes).
+
+indexed_fold() ->
+    _ = mfdb:delete_table(test_idx),
+    ok = mfdb:create_table(test_idx, [{record, ?TEST_IDX}, {indexes, [3]}]),
+    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,500)],
+    timer:sleep(500),
+    FoldFun = fun(#test_idx{id = Id}, Acc) -> [Id | Acc] end,
+    D = mfdb:fold(test_idx, FoldFun, [], [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 490}, {'<', '$1', 496}], ['$_']}]),
+    ?assertEqual([495,494,493,492,491], D).
+
 recv([], Acc) ->
     Acc;
 recv(Ids, Acc) ->
@@ -174,7 +211,7 @@ recv(Ids, Acc) ->
         {X, _Cnt} = Msg ->
             recv(lists:delete(X, Ids), [Msg | Acc])
     after 60000 ->
-        throw(timeout)
+            throw(timeout)
     end.
 
 kg(L, K, D) ->

@@ -139,7 +139,5 @@
          streaming_mode :: atom(),
          iteration :: pos_integer(),
          snapshot :: boolean(),
-         reverse :: 1 | 0,
-         write_lock = false :: boolean(),
-         st :: #st{}
+         reverse :: 1 | 0
         }).

@@ -3,8 +3,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -record(test_a, {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
-%%-record(test_b, {id :: integer(), value :: binary()}).
--record(test, {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
+-record(test,   {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
 -define(TEST_A, {test_a, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
 -define(TEST_B, {test_b, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
 -define(APP_KEY, <<"cb136a3d-de40-4a85-bd10-bb23f6f1ec2a">>).
@@ -24,7 +23,8 @@ t_011_test_() -> {timeout, 10, fun() -> select_no_continuation() end}.
 t_012_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
 t_013_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
 t_014_test_() -> {timeout, 10, fun() -> check_field_types() end}.
-t_015_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
+t_015_test_() -> {timeout, 60, fun() -> fold_simple() end}.
+t_016_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -143,6 +143,15 @@ check_field_types() ->
     ?assertEqual({error,{value,name_atom,not_a_binary}}, Error1),
     Error2 = mfdb:insert(test_a, #test{id = 1, value = <<"value">>}),
     ?assertEqual({error,invalid_record}, Error2).
+
+fold_simple() ->
+    _ = mfdb:clear_table(test_a),
+    [spawn(fun() -> ok = mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) end) || X <- lists:seq(1,500)],
+    timer:sleep(500),
+    FoldFun = fun(#test_a{id = Id}, {Cnt, Sum}) -> {Cnt + 1, Sum + Id} end,
+    Expected = {500, lists:sum(lists:seq(1,500))},
+    Res = mfdb:fold(test_a, FoldFun, {0, 0}),
+    ?assertEqual(Expected, Res).
 
 parallel_fold_delete() ->
     %% Multiple processes folding over and deleting data from a table

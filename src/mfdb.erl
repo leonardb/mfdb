@@ -1578,30 +1578,30 @@ ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0)
     Indexes = [I || #idx{} = I <- tuple_to_list(Index)],
     RangeGuards = range_guards(Guards, Binds, Indexes, []),
     {PkStart, PkEnd} = primary_table_range_(RangeGuards),
+    RecMs = ets:match_spec_compile(Ms),
     case idx_sel(RangeGuards, Indexes, St) of
         {use_index, {_IdxPos, {Start, End, Match, Guard}}} = _IdxSel ->
             IdxMs0 = [{Match, Guard, ['$_']}],
             IdxMs = ets:match_spec_compile(IdxMs0),
-            RecMs = ets:match_spec_compile(Ms),
             RecMatchFun = ffold_rec_match_fun_(TabPfx, RecMs, UserFun),
             DataFun = ffold_idx_match_fun_(St, IdxMs, RecMatchFun),
             ffold_indexed_(St, DataFun, UserAcc, Start, End);
         no_index ->
             %% error_logger:info_msg(" PkStart: ~p PkEnd ~p", [ PkStart, PkEnd]),
-            ffold_loop_init_(St, UserFun, UserAcc, ets:match_spec_compile(Ms), PkStart, PkEnd)
+            ffold_loop_init_(St, UserFun, UserAcc, RecMs, PkStart, PkEnd)
     end.
 
 ffold_idx_match_fun_(#st{} = St, IdxMs, RecMatchFun) ->
     fun({idx, {{IdxVal, PkVal}} = R}, IAcc) ->
-               case ets:match_spec_run([R], IdxMs) of
-                   [] ->
-                       %% Did not match
-                       IAcc;
-                   [{{IdxVal, PkVal}}] ->
-                       %% Matched
-                       RecMatchFun(St, PkVal, IAcc)
-               end
-       end.
+            case ets:match_spec_run([R], IdxMs) of
+                [] ->
+                    %% Did not match
+                    IAcc;
+                [{{IdxVal, PkVal}}] ->
+                    %% Matched
+                    RecMatchFun(St, PkVal, IAcc)
+            end
+    end.
 
 ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
     fun(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, PkVal, Acc0) ->
@@ -1648,30 +1648,48 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
             end
     end.
 
-ffold_indexed_(#st{db = Db, pfx = TabPfx} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
-    case erlfdb:get_range(Db, Start, End, [{limit, 1}]) of
+ffold_limit_(#st{write_lock = true}) -> 1;
+ffold_limit_(_) -> 10.
+
+ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
+    case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St)}]) of
         [] ->
             [];
-        [{LastKey, _}] ->
+        [{LastKey, _}] when WLock =:= true ->
             NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
+            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+        KeyVals when WLock =:= false ->
+            {LastKey, _} = lists:last(KeyVals),
+            NAcc = lists:foldl(
+                     fun({K, _}, OAcc) ->
+                             MatchFun(mfdb_lib:decode_key(TabPfx, K), OAcc)
+                     end, InAcc, KeyVals),
             ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
     end.
 
-ffold_indexed_cont_(#st{db = Db, pfx = TabPfx} = St, MatchFun, InAcc, Start0, End) ->
+ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, Start0, End) ->
     Start = erlfdb_key:first_greater_than(Start0),
-    case erlfdb:get_range(Db, Start, End, [{limit, 2}]) of
+    case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St) + 1}]) of
         [] ->
             InAcc;
         [{Start0, _}] ->
             InAcc;
-        [{Start0, _}, {LastKey, _}] ->
+        [{Start0, _}, {LastKey, _}] when WLock =:= true ->
             NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
             ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
-        [{LastKey, _}, _] ->
+        [{LastKey, _}, _] when WLock =:= true ->
             NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
             ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
-        [{LastKey, _}] ->
+        [{LastKey, _}] when WLock =:= true ->
             NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
+            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+        KeyVals0 when WLock =:= false ->
+            KeyVals = lists:keydelete(Start0, 1, KeyVals0),
+            {LastKey, _} = lists:last(KeyVals),
+            NAcc = lists:foldl(
+                     fun({K, _}, OAcc) ->
+                             MatchFun(mfdb_lib:decode_key(TabPfx, K), OAcc)
+                     end, InAcc, KeyVals),
             ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
     end.
 
@@ -1679,19 +1697,34 @@ ffold_loop_init_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkStart, PkEnd) ->
     case first_(St, PkStart) of
         '$end_of_table' ->
             InnerAcc;
-        KeyValue ->
-            ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, KeyValue)
+        KeyValues ->
+            {LastKey, _, _} = lists:last(KeyValues),
+            ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyValues)
     end.
 
-ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, '$end_of_table') when is_list(InnerAcc) ->
+ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, _LastKey, '$end_of_table') when is_list(InnerAcc) ->
     lists:reverse(InnerAcc);
-ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, '$end_of_table') ->
+ffold_loop_cont_(_St, _InnerFun, InnerAcc, _Ms, _PkEnd, _LastKey, '$end_of_table') ->
     InnerAcc;
-ffold_loop_cont_(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, InnerFun, InnerAcc, Ms, PkEnd, {EncKey, Key, Rec}) ->
+ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
+    NewAcc = ffold_loop_recs(KeyVals, St, InnerFun, Ms, InnerAcc),
+    case next_(St, LastKey, PkEnd) of
+        '$end_of_table' ->
+            NewAcc;
+        [] ->
+            NewAcc;
+        KeyValues ->
+            {NewLastKey, _, _} = lists:last(KeyValues),
+            ffold_loop_cont_(St, InnerFun, NewAcc, Ms, PkEnd, NewLastKey, KeyValues)
+    end.
+
+ffold_loop_recs([], _St, _InnerFun, _Ms, InnerAcc) ->
+    InnerAcc;
+ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{db = Db, pfx = TblPfx, write_lock = WLock} = St, InnerFun, Ms, InnerAcc) ->
     case ets:match_spec_run([Rec], Ms) of
         [] ->
             %% Record did not match specification
-            ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, next_(St, Key, PkEnd));
+            ffold_loop_recs(Rest, St, InnerFun, Ms, InnerAcc);
         [_Match] when is_function(InnerFun, 3) andalso WLock =:= true ->
             %% Record matched specification and we need to lock the record
             Tx = erlfdb:create_transaction(Db),
@@ -1701,9 +1734,9 @@ ffold_loop_cont_(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, InnerFun, 
                 not_found ->
                     %% move on.... Already deleted by something else
                     ok = erlfdb:wait(erlfdb:cancel(Tx)),
-                    ffold_loop_cont_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkEnd, next_(St, Key, PkEnd));
+                    ffold_loop_recs(Rest, St, InnerFun, Ms, InnerAcc);
                 EncVal ->
-                    Rec2 = mfdb_lib:decode_val(Db, TblPfx, EncVal),
+                    Rec2 = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
                     NextAcc = try
                                   [Match] = ets:match_spec_run([Rec2], Ms),
                                   NewAcc = InnerFun(St#st{db = Tx}, Match, InnerAcc),
@@ -1714,12 +1747,12 @@ ffold_loop_cont_(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, InnerFun, 
                                       ok = erlfdb:wait(erlfdb:cancel(Tx)),
                                       InnerAcc
                               end,
-                    ffold_loop_cont_(#st{db = Db} = St, InnerFun, NextAcc, Ms, PkEnd, next_(St, Key, PkEnd))
+                    ffold_loop_recs(Rest, St, InnerFun, Ms, NextAcc)
             end;
         [Match] when is_function(InnerFun, 2) andalso WLock =:= false ->
             %% Record matched specification, is a fold operation, apply the supplied DataFun
             NewAcc = InnerFun(Match, InnerAcc),
-            ffold_loop_cont_(#st{db = Db} = St, InnerFun, NewAcc, Ms, PkEnd, next_(St, Key, PkEnd))
+            ffold_loop_recs(Rest, St, InnerFun, Ms, NewAcc)
     end.
 
 range_start(TabPfx, {gt, X}) ->
@@ -1740,34 +1773,31 @@ range_end(TabPfx, X) when X =:= '_' orelse X =:= <<"~">> ->
 range_end(TabPfx, X) ->
     erlfdb_key:strinc(mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X})).
 
-first_(#st{db = Db, pfx = TabPfx}, PkStart) ->
+first_(#st{db = Db, pfx = TabPfx} = St, PkStart) ->
     StartKey = range_start(TabPfx, PkStart),
     EndKey = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})),
-    %% error_logger:info_msg("StartKey: ~p EndKey: ~p", [StartKey, EndKey]),
-    case erlfdb:get_range(Db, StartKey, EndKey, [{limit, 1}]) of
+    case erlfdb:get_range(Db, StartKey, EndKey, [{limit, ffold_limit_(St)}]) of
         [] ->
             '$end_of_table';
-        [{EncKey, Val}] ->
-            {EncKey, mfdb_lib:decode_key(TabPfx, EncKey), mfdb_lib:decode_val(Db, TabPfx, Val)}
+        KeyVals ->
+            [{EncKey,
+              mfdb_lib:decode_key(TabPfx, EncKey),
+              mfdb_lib:decode_val(Db, TabPfx, Val)}
+             || {EncKey, Val} <- KeyVals]
     end.
 
-next_(#st{db = Db, pfx = TabPfx}, PrevKey, PkEnd) ->
-    SKey = range_start(TabPfx, PrevKey),
+next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
+    SKey = range_start(TabPfx, mfdb_lib:decode_key(TabPfx, PrevKey)),
     EKey = range_end(TabPfx, PkEnd),
-    case erlfdb:get_range(Db, SKey, EKey, [{limit, 2}]) of
+    case erlfdb:get_range(Db, SKey, EKey, [{limit, ffold_limit_(St)+1}]) of
         [] ->
             '$end_of_table';
-        [{K, V}] ->
-            case mfdb_lib:decode_key(TabPfx, K) of
-                PrevKey ->
-                    '$end_of_table';
-                OutKey ->
-                    {K, OutKey, mfdb_lib:decode_val(Db, TabPfx, V)}
-            end;
-        [{K0, V0}, {K1, V1}] ->
-            Args = [{K0, mfdb_lib:decode_key(TabPfx, K0), V0},
-                    {K1, mfdb_lib:decode_key(TabPfx, K1), V1}],
-            {EncKey, OutKey, OutVal} = hd([P || {_, NKey, _} = P <- Args,
-                                                NKey =/= PrevKey]),
-            {EncKey, OutKey, mfdb_lib:decode_val(Db, TabPfx, OutVal)}
+        [{K, _V}] when K =:= PrevKey ->
+            '$end_of_table';
+        KeyVals0 ->
+            KeyVals = lists:keydelete(PrevKey, 1, KeyVals0),
+            [{EncKey,
+              mfdb_lib:decode_key(TabPfx, EncKey),
+              mfdb_lib:decode_val(Db, TabPfx, Val)}
+             || {EncKey, Val} <- KeyVals]
     end.

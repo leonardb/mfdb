@@ -131,7 +131,7 @@ write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
                     <<OldSize:32, OldEncRecord/binary>> when OldEncRecord =/= EncRecord ->
                         %% Record exists, but has changed
                         %% Remove any old index pointers
-                        ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes),
+                        ok = erlfdb:wait(remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(OldEncRecord), Indexes)),
                         %% Replacing entry, only changes the size
                         {true, ((OldSize * -1) + Size), 0};
                     <<_OldSize:32, OldEncRecord/binary>> when OldEncRecord =:= EncRecord ->
@@ -143,18 +143,18 @@ write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
                 end,
             case DoSave of
                 true ->
-                    write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
-                    ok = create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes),
+                    erlfdb:wait(write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)),
+                    ok = erlfdb:wait(create_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes)),
                     %% Update the 'size' of stored data
-                    ok = inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc),
+                    ok = erlfdb:wait(inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, SizeInc)),
                     %% Update the count of stored records
-                    ok = inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc),
+                    ok = erlfdb:wait(inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc)),
                     %% Create/update any TTLs
-                    ok = ttl_add(Tx, TabPfx, TtlValue, PkValue);
+                    ok = erlfdb:wait(ttl_add(Tx, TabPfx, TtlValue, PkValue));
                 false ->
-                    write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord),
+                    erlfdb:wait(write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)),
                     %% Update any TTLs
-                    ok = ttl_add(Tx, TabPfx, TtlValue, PkValue)
+                    ok = erlfdb:wait(ttl_add(Tx, TabPfx, TtlValue, PkValue))
             end
     end.
 
@@ -342,14 +342,18 @@ table_data_size(#st{db = Db, pfx = TabPfx}) ->
             lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
     end.
 
-table_count(#st{db = Db, pfx = TabPfx}) ->
+table_count(#st{db = ?IS_DB = Db, pfx = TabPfx}) ->
     Pfx = encode_prefix(TabPfx, {?TABLE_COUNT_PREFIX, ?FDB_WC}),
-    case erlfdb:get_range_startswith(Db, Pfx) of
-        [] ->
-            0;
-        KVs ->
-            lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
-    end.
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
+                  [] ->
+                      0;
+                  KVs ->
+                      lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
+              end
+      end).
 
 bin_split(Bin) ->
     bin_split(Bin, 0, []).

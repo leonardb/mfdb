@@ -293,8 +293,8 @@ delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
                 {0, 0};
             <<"mfdb_ref", OldSize:32, MfdbRefPartId/binary>> ->
                 %% Remove any index values that may exist
-                EncRecord = parts_value_(MfdbRefPartId, TabPfx, Tx),
-                ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes),
+                EncRecord = erlfdb:wait(parts_value_(MfdbRefPartId, TabPfx, Tx)),
+                ok = erlfdb:wait(remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes)),
                 %% Remove parts of large value
                 {?DATA_PART_PREFIX, PartHcaVal} = sext:decode(MfdbRefPartId),
                 Start = encode_prefix(TabPfx, {?DATA_PART_PREFIX, PartHcaVal, <<"_">>, ?FDB_WC}),
@@ -302,13 +302,13 @@ delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
                 {OldSize * -1, -1};
             <<OldSize:32, EncRecord/binary>> ->
                 %% Remove any index values that may exist
-                ok = remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes),
+                ok = erlfdb:wait(remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes)),
                 {OldSize * -1, -1}
         end,
     %% decrement size
-    inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, IncSize),
+    erlfdb:wait(inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, IncSize)),
     %% decrement item count
-    inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, IncCount),
+    erlfdb:wait(inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, IncCount)),
     ok = erlfdb:wait(erlfdb:clear(Tx, EncKey)).
 
 remove_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes) when is_tuple(Indexes) ->

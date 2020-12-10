@@ -6,26 +6,32 @@ A mnesia-like record layer for FoundationDb
 This project supersedes https://github.com/leonardb/mnesia_fdb
 
 It supports:
-- strict typing on record fields
-- secondary indexes
+- optional basic type checking on record fields
+- secondary indexes (caveat, 9Kb field size limit for indexed fields)
 - table size (bytes) `mfdb:table_info(Tab, size)`
 - table count `mfdb:table_info(Tab, count)`
-- per table or per record TTLs
+- per table TTL *or* per record TTLs
 
 **WARNING** Unlike mnesia, keypos cannot be specified and the key is always the first field of the record.
+
+## Requirements
+ - FoundationDB 6.2.x Server and Client: https://www.foundationdb.org/download/
+ - `couchdb-erlfdb`: https://github.com/leonardb/couchdb-erlfdb This is forked from https://github.com/apache/couchdb-erlfdb with changes to support rebar3, alternate build, dialyzer fixes, and custom native types.
 
 # Table creation options
 
 - ###record :: {RecordName :: atom, Fields :: list({atom(), atom() list(atom())})}.
 
     Fields which are typed are checked for validity on insert.
-EG: `{record, {test, [{id, integer}, {value, [undefined | binary]}]}}`
+EG: `{record, {test, [{id, integer}, {value, [undefined | binary]}, {expires, datetime}]}}`
 
     Supported types for fields:
     
     ```erlang
     -type field_type() :: binary | integer | float | list | tuple | date | datetime | time | inet | inet4 | inet6 | atom | any | term | undefined | null.
   ```
+  
+    When a field is configured as the TTL field, the field type _must_ be 'datetime'. This field automatically supports the atom 'never'.
 
 - ###indexes :: list(integer())
     This is like mnesia's `index` option.
@@ -35,12 +41,15 @@ EG: `{record, {test, [{id, integer}, {value, [undefined | binary]}]}}`
     Secondary indexes are used automatically in `mfdb:select/2` (if they exist) and can be used explicitly through `mfdb:index_read/3`
 
 - ###TTLs
-    - ####table_ttl :: {table_ttl, ttl()}
-        ```erlang
-        -type ttl() :: {minutes | hours | days, pos_integer()}.
-      ```
+    ```erlang
+    -type field_ttl()   :: {field, pos_integer()}. %% where the post_integer is the field position in the record
+    -type ttl_period()  :: {minutes | hours | days | unix, pos_integer()}.
+    -type table_ttl()   :: {table, ttl_period()}.
+    -type ttl()         :: field_ttl() | table_ttl().
+  ```
+    - ####table_ttl :: {table_ttl, table_ttl()}
     *or*
-    - ####field_ttl :: {field_ttl, integer()}
+    - ####field_ttl :: {field_ttl, field_ttl()}
         where the integer is the index of the field to use for TTLs.
         
         This field *must* be of type 'datetime' and expects a UTC calendar:datetime() or the atom 'never'. 
@@ -93,6 +102,7 @@ When called with a three-arity `InnerFun` the fold takes and explicit read and w
 The following operations are then available within the context of the transaction:
 - `mfdb:delete(Tx, PrimaryKey)`
 - `mfdb:insert(Tx, Record)`
+- `mfdb:update(Tx, PrimaryKey, Changes)`
 
 Each step is committed individually and failed commits are silently rolled back/discarded.
 

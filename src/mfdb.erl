@@ -109,6 +109,8 @@ clear_table(Table) when is_atom(Table) ->
     end.
 
 %% @doc import all records from SourceFile into a table.
+%% SourceFile is a file of erlang record terms of the correct type for the table.
+%% @end
 -spec import(Table :: table_name(), SourceFile :: list()) -> ok | {error, not_connected}.
 import(Table, SourceFile) when is_atom(Table) ->
     try gen_server:call(?TABPROC(Table), {import, SourceFile}, infinity)
@@ -162,7 +164,7 @@ select(Cont) ->
     end.
 
 %% @doc Lookup a record by Primary Key
--spec lookup(Table :: table_name(), PkValue :: any()) -> {ok, tuple()} | {error, not_found}.
+-spec lookup(Table :: table_name(), PkValue :: any()) -> {ok, dbrec()} | {error, not_found}.
 lookup(Table, PkValue) when is_atom(Table) ->
     #st{db = Db, pfx = TblPfx} = mfdb_manager:st(Table),
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
@@ -175,7 +177,7 @@ lookup(Table, PkValue) when is_atom(Table) ->
     end.
 
 %% @doc Look up records with specific index value and returns any matching objects
--spec index_read(Table :: table_name(), IdxValue :: any(), IdxPosition :: pos_integer()) -> [] | [tuple()] | {error, no_index_on_field}.
+-spec index_read(Table :: table_name(), IdxValue :: any(), IdxPosition :: pos_integer()) -> [] | [dbrec()] | {error, no_index_on_field}.
 index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
     #st{index = Indexes, record_name = RName, fields = Fields} = mfdb_manager:st(Table),
     case element(IdxPosition, Indexes) of
@@ -191,13 +193,14 @@ index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
     end.
 
 %% @doc insert/replace a record. Types of values are checked if table has typed fields.
--spec insert(TableOrTx :: table_name() | fdb_tx(), ObjectTuple :: tuple()) -> ok | {error, any()}.
-insert(Table, ObjectTuple) when is_atom(Table) andalso is_tuple(ObjectTuple) ->
+-spec insert(TableOrTx :: table_name() | fdb_tx(), DbRecord :: dbrec()) -> ok | {error, any()}.
+insert(Table, DbRecord) when is_atom(Table) andalso is_tuple(DbRecord) ->
     #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
-    Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, ObjectTuple),
+    Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, DbRecord),
     mfdb_lib:flow(Flow, true);
-insert(#st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St, ObjectTuple) when is_tuple(ObjectTuple) ->
-    Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, ObjectTuple),
+insert(#st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St, DbRecord)
+  when is_tuple(DbRecord) ->
+    Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, DbRecord),
     mfdb_lib:flow(Flow, true).
 
 %% @private
@@ -230,9 +233,15 @@ mk_insert_flow_(StOrTx, RecName, Fields, Index, Ttl, ObjectTuple) ->
      {IndexCheckFun, [ObjectList, IndexList]},
      {fun mfdb_lib:write/3, [StOrTx, RKey, ObjectTuple]}].
 
--spec update(Table :: table_name(), Key :: any(), Changes :: field_changes()) -> ok | {error, any()}.
-update(Table, Key, Changes) when is_atom(Table) ->
-    #st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+%% @doc Update an existing record
+-spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) -> ok | {error, not_found}.
+update(Table, Key, Changes)
+  when is_atom(Table) andalso
+       is_list(Changes)  ->
+    #st{} = St = mfdb_manager:st(Table),
+    update(St, Key, Changes);
+update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St, Key, Changes)
+  when is_list(Changes) ->
     IndexList = tl(tuple_to_list(Index)),
     ChangeTuple = erlang:setelement(1, erlang:make_tuple(size(Index), ?NOOP_SENTINAL), RecordName),
     TtlPos = case Ttl of
@@ -252,7 +261,7 @@ update(Table, Key, Changes) when is_atom(Table) ->
 %% @private
 %% Assign the values in changes to the correct positions in the ChangeTuple
 %% and verify that the fields in the changes are defined for the record
-validate_updates_(_Fields, [], _Pos, ChangeTuple, ValueAcc, TypeAcc) ->
+validate_updates_([], [], _Pos, ChangeTuple, ValueAcc, TypeAcc) ->
     {ChangeTuple, ValueAcc, TypeAcc};
 validate_updates_([], Changes, _Pos, _ChangeTuple, _ValueAcc, _TypeAcc) when Changes =/= [] ->
     {error, unknown_fields_in_update};
@@ -1271,7 +1280,7 @@ rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
     {LastKey0, _} = lists:last(Rows0),
     {Rows0, NHasMore, LastKey0}.
 
-%% @doc The do_import is based off of the file:consult/1 code which reads in terms from a file
+%% @doc The do_import is based off of file:consult/1 code which reads in terms from a file
 %% @hidden
 do_import_(Table, SourceFile, ImportId) ->
     #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
@@ -1345,9 +1354,9 @@ consult_stream(Fd, Fun, Acc) ->
 
 %% @doc Applies a function to all records in the table
 %% InnerFun is either a 2-arity (read-only) or 3-arity (grabs read/write locks) function with specification:
-%%   Fun(Record :: tuple(), Accumulator :: any())
+%%   Fun(Record :: dbrec(), Accumulator :: any())
 %%     - the 2-arity fold is read-only
-%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
+%%   Fun(Tx :: opaque(), Record :: dbrec(), Accumulator :: any())
 %%     - with the 3-arity function read/write locks are taken over each step
 %%     - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
 %%  Since InnerFun is applied _before_ the transaction is committed you
@@ -1393,9 +1402,9 @@ fold(Table, InnerFun, InnerAcc)
 
 %% @doc Applies a function to all records in the table matching the MatchSpec
 %% InnerFun is either a 2-arity (read-only) or 3-arity (grabs read/write locks) function with specification:
-%%   Fun(Record :: tuple(), Accumulator :: any())
+%%   Fun(Record :: dbrec(), Accumulator :: any())
 %%     - the 2-arity fold is read-only
-%%   Fun(Tx :: opaque(), Record :: tuple(), Accumulator :: any())
+%%   Fun(Tx :: opaque(), Record :: dbrec(), Accumulator :: any())
 %%     - with the 3-arity function read/write locks are taken over each step
 %%     - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
 %%  Since InnerFun is applied _before_ the transaction is committed you
@@ -1571,6 +1580,7 @@ ffold_loop_init_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkStart, PkEnd) ->
     end.
 
 ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
+    %%error_logger:info_msg("LastKey: ~p KeyVals: ~p", [LastKey, KeyVals]),
     NewAcc = ffold_loop_recs(KeyVals, St, InnerFun, Ms, InnerAcc),
     case next_(St, LastKey, PkEnd) of
         '$end_of_table' when is_list(NewAcc) ->
@@ -1580,7 +1590,7 @@ ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
         [] when is_list(NewAcc) ->
             lists:reverse(NewAcc);
         [] ->
-            lists:reverse(NewAcc);
+            NewAcc;
         KeyValues ->
             {NewLastKey, _, _} = lists:last(KeyValues),
             ffold_loop_cont_(St, InnerFun, NewAcc, Ms, PkEnd, NewLastKey, KeyValues)
@@ -1609,9 +1619,11 @@ ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{db = Db, pfx = TblPfx, write_l
                                   [Match] = ets:match_spec_run([Rec2], Ms),
                                   NewAcc = InnerFun(St#st{db = Tx}, Match, InnerAcc),
                                   ok = erlfdb:wait(erlfdb:commit(Tx)),
+                                  %% error_logger:info_msg("Commited: ~p", [Match]),
                                   NewAcc
                               catch
                                   _E:_M:_Stack ->
+                                      %% error_logger:error_msg("Cancel: ~p", [_Stack]),
                                       ok = erlfdb:wait(erlfdb:cancel(Tx)),
                                       InnerAcc
                               end,

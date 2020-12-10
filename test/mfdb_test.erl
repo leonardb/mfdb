@@ -9,6 +9,7 @@
 -define(TEST_B, {test_b, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
 -define(TEST_IDX, {test_idx, [{id, integer}, {value, integer}]}).
 -define(APP_KEY, <<"cb136a3d-de40-4a85-bd10-bb23f6f1ec2a">>).
+-define(IS_TX, {erlfdb_transaction, _}).
 
 %% This sux, but it's the only way I can get around random timeout issues
 t_001_test_() -> {timeout, 10, fun() -> start() end}.
@@ -26,10 +27,11 @@ t_012_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
 t_013_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
 t_014_test_() -> {timeout, 10, fun() -> check_field_types() end}.
 t_015_test_() -> {timeout, 60, fun() -> fold_simple() end}.
-t_016_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
-t_017_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
-t_018_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
-t_019_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
+t_016_test_() -> {timeout, 60, fun() -> fold_update() end}.
+t_017_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
+t_018_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
+t_019_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
+t_020_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -158,6 +160,28 @@ fold_simple() ->
     Res = mfdb:fold(test_a, FoldFun, {0, 0}),
     ?assertEqual(Expected, Res).
 
+fold_update() ->
+    ok = mfdb:clear_table(test_a),
+    {ok, TabCnt0} = mfdb:table_info(test_a, count),
+    ?assertEqual(0, TabCnt0),
+    [spawn(fun() -> ok = mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) end) || X <- lists:seq(1,10)],
+    timer:sleep(500),
+    {ok, TabCnt} = mfdb:table_info(test_a, count),
+    ?assertEqual(10, TabCnt),
+    FoldFun = fun(Tx, #test_a{id = Id, value = _Val}, Cnt) ->
+                      NewVal = integer_to_binary(Id * 2, 32),
+                      ok = mfdb:update(Tx, Id, [{value, NewVal}]),
+                      Cnt + 1
+              end,
+    Res = mfdb:fold(test_a, FoldFun, 0),
+    ?assertEqual(10, Res),
+    Expected = lists:sum([X * 2 || X <- lists:seq(1,10)]),
+    SumFun = fun(#test_a{value = Val}, S) ->
+                     S + binary_to_integer(Val, 32)
+             end,
+    Sum = mfdb:fold(test_a, SumFun, 0),
+    ?assertEqual(Expected, Sum).
+
 parallel_fold_delete() ->
     %% Multiple processes folding over and deleting data from a table
     %% Ensure only 500 records (count for table) are actually processed
@@ -175,16 +199,16 @@ parallel_fold_delete() ->
 indexed_select_one() ->
     _ = mfdb:delete_table(test_idx),
     ok = mfdb:create_table(test_idx, [{record, ?TEST_IDX}, {indexes, [3]}]),
-    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,500)],
+    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,100)],
     timer:sleep(500),
-    {D, '$end_of_table'} = mfdb:select(test_idx, [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 490}, {'<', '$1', 496}], ['$_']}]),
+    {D, '$end_of_table'} = mfdb:select(test_idx, [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 90}, {'<', '$1', 96}], ['$_']}]),
     NumRes = length(D),
     ?assertEqual(5, NumRes).
 
 indexed_select_continuation() ->
     _ = mfdb:delete_table(test_idx),
     ok = mfdb:create_table(test_idx, [{record, ?TEST_IDX}, {indexes, [3]}]),
-    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,500)],
+    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,100)],
     timer:sleep(500),
     WrapFun = fun WrapFun({D, '$end_of_table'}, InAcc) ->
                       lists:append(InAcc, D);
@@ -193,16 +217,16 @@ indexed_select_continuation() ->
               end,
     Res = WrapFun(mfdb:select(test_idx, [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 0}], ['$_']}]), []),
     NumRes = length(Res),
-    ?assertEqual(500, NumRes).
+    ?assertEqual(100, NumRes).
 
 indexed_fold() ->
     _ = mfdb:delete_table(test_idx),
     ok = mfdb:create_table(test_idx, [{record, ?TEST_IDX}, {indexes, [3]}]),
-    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,500)],
+    [spawn(fun() -> ok = mfdb:insert(test_idx, #test_idx{id = X, value = X}) end) || X <- lists:seq(1,100)],
     timer:sleep(500),
     FoldFun = fun(#test_idx{id = Id}, Acc) -> [Id | Acc] end,
-    D = mfdb:fold(test_idx, FoldFun, [], [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 490}, {'<', '$1', 496}], ['$_']}]),
-    ?assertEqual([495,494,493,492,491], D).
+    D = mfdb:fold(test_idx, FoldFun, [], [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 90}, {'<', '$1', 96}], ['$_']}]),
+    ?assertEqual([95,94,93,92,91], D).
 
 recv([], Acc) ->
     Acc;

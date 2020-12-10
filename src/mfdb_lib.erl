@@ -169,18 +169,26 @@ write_(Tx, _TabPfx, _HcaRef, Size, EncKey, Size, EncRecord) ->
 %% @doc
 %% Update a record. This performs multiple read operations but with a write lock on the key.
 %% @end
-update(#st{db = ?IS_DB = Db, pfx = TblPfx} = St, PkValue, UpdateRec) ->
+update(#st{db = ?IS_DB = Db} = St, PkValue, UpdateRec) ->
     Tx = erlfdb:create_transaction(Db),
+    case update(St#st{db = Tx}, PkValue, UpdateRec) of
+        {error, not_found} ->
+            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+            {error, not_found};
+        _ ->
+            erlfdb:wait(erlfdb:commit(Tx))
+    end;
+update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
     ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
     case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
         not_found ->
-            {error, no_results};
+            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+            {error, not_found};
         EncVal ->
             DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
             Record = merge_record_(tuple_to_list(DecodedVal), tuple_to_list(UpdateRec)),
-            ok = write(St#st{db = Tx}, PkValue, Record),
-            ok = erlfdb:wait(erlfdb:commit(Tx))
+            ok = write(St, PkValue, Record)
     end.
 
 merge_record_(Old, New) ->

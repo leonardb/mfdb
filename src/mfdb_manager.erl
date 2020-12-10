@@ -45,7 +45,7 @@ st(Tab) ->
         #st{} = St ->
             St;
         _ ->
-            badarg
+            {error, not_connected}
     end.
 
 %%%% Genserver

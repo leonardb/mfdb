@@ -554,6 +554,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx} = St, RangeStart, RangeEnd) ->
     Tx = erlfdb:create_transaction(Db),
     try erlfdb:wait(erlfdb:get_range(Tx, RangeStart, erlfdb_key:strinc(RangeEnd), [{limit, 1000}])) of
         [] ->
+            erlfdb:wait(erlfdb:commit(Tx)),
             ok;
         KVs ->
             LastKey = lists:foldl(
@@ -571,6 +572,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx} = St, RangeStart, RangeEnd) ->
     catch
         _E:_M:_Stack ->
             error_logger:error_msg("Reaping error: ~p", [{_E, _M, _Stack}]),
+            erlfdb:wait(erlfdb:cancel(Tx)),
             ok
     end.
 
@@ -1238,7 +1240,7 @@ iter_commit_(?IS_TX = Tx) ->
         _E:{erlfdb_error, ErrCode}:_Stacktrace ->
             ok = erlfdb:wait(erlfdb:on_error(Tx, ErrCode)),
             ErrAtom = mfdb_lib:fdb_err(ErrCode),
-            erlfdb:cancel(Tx),
+            erlfdb:wait(erlfdb:cancel(Tx)),
             {error, ErrAtom}
     end.
 
@@ -1487,13 +1489,16 @@ ffold_idx_match_fun_(#st{} = St, IdxMs, RecMatchFun) ->
 ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
     fun(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, PkVal, Acc0) ->
             EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
-            case erlfdb:get(Db, EncKey) of
+            DecodeTx = erlfdb:create_transaction(Db),
+            case erlfdb:wait(erlfdb:get(DecodeTx, EncKey)) of
                 not_found ->
                     %% This should only happen with a dead index
                     %% entry (data deleted after we got index)
+                    erlfdb:wait(erlfdb:cancel(DecodeTx)),
                     Acc0;
                 EncVal0 ->
-                    Rec0 = mfdb_lib:decode_val(Db, TabPfx, EncVal0),
+                    Rec0 = erlfdb:wait(mfdb_lib:decode_val(DecodeTx, TabPfx, EncVal0)),
+                    erlfdb:wait(erlfdb:commit(DecodeTx)),
                     case ets:match_spec_run([Rec0], RecMs) of
                         [] ->
                             %% Did not match specification
@@ -1512,7 +1517,7 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
                                     ok = erlfdb:wait(erlfdb:cancel(Tx)),
                                     Acc0;
                                 EncVal ->
-                                    Rec2 = mfdb_lib:decode_val(Db, TblPfx, EncVal),
+                                    Rec2 = erlfdb:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
                                     NextAcc = try
                                                   [Match] = ets:match_spec_run([Rec2], RecMs),
                                                   NewAcc = UserFun(St#st{db = Tx}, Match, Acc0),

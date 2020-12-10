@@ -168,13 +168,17 @@ select(Cont) ->
 lookup(Table, PkValue) when is_atom(Table) ->
     #st{db = Db, pfx = TblPfx} = mfdb_manager:st(Table),
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
-    case erlfdb:get(Db, EncKey) of
-        not_found ->
-            {error, not_found};
-        EncVal ->
-            DecodedVal = mfdb_lib:decode_val(Db, TblPfx, EncVal),
-            {ok, DecodedVal}
-    end.
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              case erlfdb:get(Tx, EncKey) of
+                  not_found ->
+                      {error, not_found};
+                  EncVal ->
+                      DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
+                      {ok, DecodedVal}
+              end
+      end).
 
 %% @doc Look up records with specific index value and returns any matching objects
 -spec index_read(Table :: table_name(), IdxValue :: any(), IdxPosition :: pos_integer()) -> [] | [dbrec()] | {error, no_index_on_field}.

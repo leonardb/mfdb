@@ -171,7 +171,7 @@ lookup(Table, PkValue) when is_atom(Table) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
-              case erlfdb:get(Tx, EncKey) of
+              case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
                   not_found ->
                       {error, not_found};
                   EncVal ->

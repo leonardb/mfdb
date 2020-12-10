@@ -1520,7 +1520,7 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
                                     Rec2 = erlfdb:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
                                     NextAcc = try
                                                   [Match] = ets:match_spec_run([Rec2], RecMs),
-                                                  NewAcc = UserFun(St#st{db = Tx}, Match, Acc0),
+                                                  NewAcc = erlfdb:wait(UserFun(St#st{db = Tx}, Match, Acc0)),
                                                   ok = erlfdb:wait(erlfdb:commit(Tx)),
                                                   NewAcc
                                               catch
@@ -1626,7 +1626,7 @@ ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{db = Db, pfx = TblPfx, write_l
                     Rec2 = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
                     NextAcc = try
                                   [Match] = ets:match_spec_run([Rec2], Ms),
-                                  NewAcc = InnerFun(St#st{db = Tx}, Match, InnerAcc),
+                                  NewAcc = erlfdb:wait(InnerFun(St#st{db = Tx}, Match, InnerAcc)),
                                   ok = erlfdb:wait(erlfdb:commit(Tx)),
                                   %% error_logger:info_msg("Commited: ~p", [Match]),
                                   NewAcc

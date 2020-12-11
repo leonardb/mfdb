@@ -1519,6 +1519,11 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
                                 ok = erlfdb:wait(erlfdb:commit(Tx)),
                                 NewAcc
                             catch
+                                error:{erlfdb_error, Code} ->
+                                    error_logger:error_msg("Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
+                                    erlfdb:wait(erlfdb:on_error(Tx, Code), [{timeout, infinity}]),
+                                    ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                                    Acc0;
                                 _E:_M:_Stack ->
                                     ok = erlfdb:wait(erlfdb:cancel(Tx)),
                                     Acc0
@@ -1632,6 +1637,11 @@ ffold_apply_with_transaction_(#st{db = Db, pfx = TblPfx} = St, EncKey, InnerFun,
                         ok = erlfdb:wait(erlfdb:commit(Tx)),
                         NewAcc
                     catch
+                        error:{erlfdb_error, Code} ->
+                            error_logger:error_msg("Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
+                            erlfdb:wait(erlfdb:on_error(Tx, Code), [{timeout, infinity}]),
+                            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                            InnerAcc;
                         _E:_M:_Stack ->
                             ok = erlfdb:wait(erlfdb:cancel(Tx)),
                             InnerAcc

@@ -1610,41 +1610,43 @@ ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
 
 ffold_loop_recs([], _St, _InnerFun, _Ms, InnerAcc) ->
     InnerAcc;
-ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{db = Db, pfx = TblPfx, write_lock = WLock} = St, InnerFun, Ms, InnerAcc) ->
+ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock} = St, InnerFun, Ms, InnerAcc) ->
     case ets:match_spec_run([Rec], Ms) of
         [] ->
             %% Record did not match specification
             ffold_loop_recs(Rest, St, InnerFun, Ms, InnerAcc);
         [_Match] when is_function(InnerFun, 3) andalso WLock =:= true ->
-            %% Record matched specification and we need to lock the record
-            Tx = erlfdb:create_transaction(Db),
-            ok = erlfdb:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
-            ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
-            case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
-                not_found ->
-                    %% move on.... Already deleted by something else
-                    ok = erlfdb:wait(erlfdb:cancel(Tx)),
-                    ffold_loop_recs(Rest, St, InnerFun, Ms, InnerAcc);
-                EncVal ->
-                    Rec2 = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
-                    NextAcc = try
-                                  [Match] = ets:match_spec_run([Rec2], Ms),
-                                  NewAcc = erlfdb:wait(InnerFun(St#st{db = Tx}, Match, InnerAcc)),
-                                  ok = erlfdb:wait(erlfdb:commit(Tx)),
-                                  %% error_logger:info_msg("Commited: ~p", [Match]),
-                                  NewAcc
-                              catch
-                                  _E:_M:_Stack ->
-                                      %% error_logger:error_msg("Cancel: ~p", [_Stack]),
-                                      ok = erlfdb:wait(erlfdb:cancel(Tx)),
-                                      InnerAcc
-                              end,
-                    ffold_loop_recs(Rest, St, InnerFun, Ms, NextAcc)
-            end;
+            NewAcc = ffold_apply_with_transaction_(St, EncKey, InnerFun, Ms, InnerAcc),
+            ffold_loop_recs(Rest, St, InnerFun, Ms, NewAcc);
         [Match] when is_function(InnerFun, 2) andalso WLock =:= false ->
             %% Record matched specification, is a fold operation, apply the supplied DataFun
             NewAcc = InnerFun(Match, InnerAcc),
             ffold_loop_recs(Rest, St, InnerFun, Ms, NewAcc)
+    end.
+
+ffold_apply_with_transaction_(#st{db = Db, pfx = TblPfx} = St, EncKey, InnerFun, Ms, InnerAcc) ->
+    Tx = erlfdb:create_transaction(Db),
+    ok = erlfdb:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+    ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+        not_found ->
+            %% move on.... Already deleted by something else
+            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+            InnerAcc;
+        EncVal ->
+            Rec2 = erlfdb:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
+            case ets:match_spec_run([Rec2], Ms) of
+                [Match] ->
+                    try
+                        NewAcc = erlfdb:wait(InnerFun(St#st{db = Tx}, Match, InnerAcc)),
+                        ok = erlfdb:wait(erlfdb:commit(Tx)),
+                        NewAcc
+                    catch
+                        _E:_M:_Stack ->
+                            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                            InnerAcc
+                    end
+            end
     end.
 
 range_start(TabPfx, {gt, X}) ->

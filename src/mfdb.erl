@@ -1517,7 +1517,7 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
                             try
                                 NewAcc = mfdb_lib:wait(UserFun(St#st{db = Tx}, Matched, Acc0)),
                                 ok = mfdb_lib:wait(erlfdb:commit(Tx)),
-                                io:format("ffold_rec_match_fun_~p ~p commited~n", [Tx, self()]),
+                                %%io:format("ffold_rec_match_fun_~p ~p commited~n", [Tx, self()]),
                                 NewAcc
                             catch
                                 error:{erlfdb_error, Code} ->
@@ -1636,7 +1636,7 @@ ffold_apply_with_transaction_(#st{db = Db, pfx = TblPfx} = St, EncKey, InnerFun,
                     try
                         NewAcc = mfdb_lib:wait(InnerFun(St#st{db = Tx}, Match, InnerAcc)),
                         ok = mfdb_lib:wait(erlfdb:commit(Tx)),
-                        io:format("~p ~p commited~n", [Tx, self()]),
+                        %%io:format("~p ~p commited~n", [Tx, self()]),
                         NewAcc
                     catch
                         error:{erlfdb_error, Code} ->

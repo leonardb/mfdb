@@ -987,7 +987,7 @@ outer_match_fun_(TabPfx, OCompiledKeyMs) ->
                     %% entry (data deleted after we got index)
                     Acc0;
                 V ->
-                    Rec = mfdb_lib:decode_val(Tx, TabPfx, V),
+                    Rec = erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, V)),
                     case ets:match_spec_run([Rec], OCompiledKeyMs) of
                         [] ->
                             %% Did not match specification

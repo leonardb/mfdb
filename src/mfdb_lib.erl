@@ -326,21 +326,29 @@ remove_any_indexes_(Tx, TabPfx, PkValue, Record, [#idx{pos = Pos, data_key = Idx
 idx_matches(#st{db = Db, index = Indexes, pfx = TabPfx}, IdxPos, Value) ->
     #idx{count_key = CountPfx} = element(IdxPos, Indexes),
     Pfx = encode_prefix(TabPfx, {CountPfx, Value, ?FDB_WC}),
-    case erlfdb:get_range_startswith(Db, Pfx) of
-        [] ->
-            0;
-        KVs ->
-            lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
-    end.
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              case erlfdb:wait(erlfdb:get_range_startswith(Tx, Pfx)) of
+                  [] ->
+                      0;
+                  KVs ->
+                      lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
+              end
+      end).
 
 table_data_size(#st{db = Db, pfx = TabPfx}) ->
     Pfx = encode_prefix(TabPfx, {?TABLE_SIZE_PREFIX, ?FDB_WC}),
-    case erlfdb:get_range_startswith(Db, Pfx) of
-        [] ->
-            0;
-        KVs ->
-            lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
-    end.
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              case erlfdb:get_range_startswith(Tx, Pfx) of
+                  [] ->
+                      0;
+                  KVs ->
+                      lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
+              end
+      end).
 
 table_count(#st{db = ?IS_DB = Db, pfx = TabPfx}) ->
     Pfx = encode_prefix(TabPfx, {?TABLE_COUNT_PREFIX, ?FDB_WC}),
@@ -410,7 +418,7 @@ encode_prefix(TabPfx, Key) ->
     <<TabPfx/binary, (sext:prefix(Key))/binary>>.
 
 save_parts(?IS_TX = Tx, TabPfx, Hca, Bin) ->
-    PartId = erlfdb_hca:allocate(Hca, Tx),
+    PartId = erlfdb:wait(erlfdb_hca:allocate(Hca, Tx)),
     PartKey = sext:encode({?DATA_PART_PREFIX, PartId}),
     ok = save_parts_(Tx, TabPfx, PartId, 0, Bin),
     PartKey.

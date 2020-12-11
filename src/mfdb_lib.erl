@@ -38,6 +38,7 @@
          sort/1,
          sort/2,
          prefix_to_range/1,
+         commit/1,
          wait/1,
          wait/2]).
 
@@ -844,7 +845,13 @@ fdb_err(4000) -> unknown_error;
 fdb_err(4100) -> internal_error.
 
 wait(Something) ->
-    wait(Something, 10000).
+    wait(Something, 5000).
 
 wait(Something, Timeout) ->
     erlfdb:wait(Something, [{timeout, Timeout}]).
+
+commit(?IS_TX = Tx) ->
+    case erlfdb:is_read_only(Tx) andalso not erlfdb:has_watches(Tx) of
+        true -> erlfdb:cancel(Tx), ok;
+        false -> wait(erlfdb:commit(Tx), infinity)
+    end.

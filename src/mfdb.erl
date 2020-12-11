@@ -65,7 +65,7 @@
          code_change/3]).
 
 -include("mfdb.hrl").
--define(REAP_POLL_INTERVAL, 500).
+-define(REAP_POLL_INTERVAL, 30000).
 
 -type dbrec() :: tuple().
 -type foldfun() :: fun((fdb_tx(), dbrec(), any()) -> any()) | fun((dbrec(), any()) -> any()).
@@ -545,36 +545,39 @@ reap_expired_(Table) ->
         _ ->
             Now = erlang:universaltime(),
             RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
-            RangeEnd = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END}),
-            reap_expired_(St, RangeStart, RangeEnd)
+            RangeEnd = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END})),
+            reap_expired_(St, RangeStart, RangeEnd, Now)
     end.
 
 %% @private
-reap_expired_(#st{db = Db, pfx = TabPfx} = St, RangeStart, RangeEnd) ->
-    Tx = erlfdb:create_transaction(Db),
-    try erlfdb:wait(erlfdb:get_range(Tx, RangeStart, erlfdb_key:strinc(RangeEnd), [{limit, 1000}])) of
-        [] ->
-            erlfdb:wait(erlfdb:commit(Tx)),
-            ok;
-        KVs ->
-            LastKey = lists:foldl(
-                        fun({EncKey, <<>>}, _) ->
-                                %% Delete the actual expired record
-                                RecKey = mfdb_lib:decode_key(TabPfx, EncKey),
-                                ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
-                                %% Key2Ttl have to be removed individually
-                                TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                                ok = erlfdb:wait(erlfdb:clear(Tx, TtlK2T)),
-                                EncKey
-                        end, ok, KVs),
-            ok = erlfdb:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
-            ok = erlfdb:wait(erlfdb:commit(Tx))
-    catch
-        _E:_M:_Stack ->
-            error_logger:error_msg("Reaping error: ~p", [{_E, _M, _Stack}]),
-            erlfdb:wait(erlfdb:cancel(Tx)),
-            ok
-    end.
+reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              KVs = erlfdb:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
+              LastKey = lists:foldl(
+                          fun({EncKey, <<>>}, LastKey) ->
+                                  %% Delete the actual expired record
+                                  <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+                                  <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
+                                  case sext:decode(EncValue) of
+                                      {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < Now ->
+                                          ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
+                                          %% Key2Ttl have to be removed individually
+                                          TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
+                                          ok = erlfdb:wait(erlfdb:clear(Tx, TtlK2T)),
+                                          EncKey;
+                                      _ ->
+                                          LastKey
+                                  end
+                          end, ok, KVs),
+              case LastKey of
+                  ok ->
+                      ok;
+                  LastKey ->
+                      erlfdb:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
+              end
+      end).
 
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

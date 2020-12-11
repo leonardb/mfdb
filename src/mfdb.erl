@@ -1668,30 +1668,38 @@ range_end(TabPfx, X) ->
     erlfdb_key:strinc(mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X})).
 
 first_(#st{db = Db, pfx = TabPfx} = St, PkStart) ->
-    StartKey = range_start(TabPfx, PkStart),
-    EndKey = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})),
-    case erlfdb:get_range(Db, StartKey, EndKey, [{limit, ffold_limit_(St)}]) of
-        [] ->
-            '$end_of_table';
-        KeyVals ->
-            [{EncKey,
-              mfdb_lib:decode_key(TabPfx, EncKey),
-              mfdb_lib:decode_val(Db, TabPfx, Val)}
-             || {EncKey, Val} <- KeyVals]
-    end.
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              StartKey = range_start(TabPfx, PkStart),
+              EndKey = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})),
+              case erlfdb:wait(erlfdb:get_range(Tx, StartKey, EndKey, [{limit, ffold_limit_(St)}])) of
+                  [] ->
+                      '$end_of_table';
+                  KeyVals ->
+                      [{EncKey,
+                        mfdb_lib:decode_key(TabPfx, EncKey),
+                        erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
+                       || {EncKey, Val} <- KeyVals]
+              end
+      end).
 
 next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
-    SKey = range_start(TabPfx, mfdb_lib:decode_key(TabPfx, PrevKey)),
-    EKey = range_end(TabPfx, PkEnd),
-    case erlfdb:get_range(Db, SKey, EKey, [{limit, ffold_limit_(St)+1}]) of
-        [] ->
-            '$end_of_table';
-        [{K, _V}] when K =:= PrevKey ->
-            '$end_of_table';
-        KeyVals0 ->
-            KeyVals = lists:keydelete(PrevKey, 1, KeyVals0),
-            [{EncKey,
-              mfdb_lib:decode_key(TabPfx, EncKey),
-              mfdb_lib:decode_val(Db, TabPfx, Val)}
-             || {EncKey, Val} <- KeyVals]
-    end.
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              SKey = range_start(TabPfx, mfdb_lib:decode_key(TabPfx, PrevKey)),
+              EKey = range_end(TabPfx, PkEnd),
+              case erlfdb:wait(erlfdb:get_range(Tx, SKey, EKey, [{limit, ffold_limit_(St)+1}])) of
+                  [] ->
+                      '$end_of_table';
+                  [{K, _V}] when K =:= PrevKey ->
+                      '$end_of_table';
+                  KeyVals0 ->
+                      KeyVals = lists:keydelete(PrevKey, 1, KeyVals0),
+                      [{EncKey,
+                        mfdb_lib:decode_key(TabPfx, EncKey),
+                        erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
+                       || {EncKey, Val} <- KeyVals]
+              end
+      end).

@@ -1490,48 +1490,38 @@ ffold_idx_match_fun_(#st{} = St, IdxMs, RecMatchFun) ->
     end.
 
 ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
-    fun(#st{db = Db, pfx = TblPfx, write_lock = WLock} = St, PkVal, Acc0) ->
+    fun(#st{db = Db, write_lock = WLock} = St, PkVal, Acc0) ->
             EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
-            DecodeTx = erlfdb:create_transaction(Db),
-            case erlfdb:wait(erlfdb:get(DecodeTx, EncKey)) of
+            Tx = erlfdb:create_transaction(Db),
+            case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
                 not_found ->
                     %% This should only happen with a dead index
                     %% entry (data deleted after we got index)
-                    erlfdb:wait(erlfdb:cancel(DecodeTx)),
+                    erlfdb:wait(erlfdb:cancel(Tx)),
                     Acc0;
                 EncVal0 ->
-                    Rec0 = erlfdb:wait(mfdb_lib:decode_val(DecodeTx, TabPfx, EncVal0)),
-                    erlfdb:wait(erlfdb:commit(DecodeTx)),
+                    Rec0 = erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, EncVal0)),
                     case ets:match_spec_run([Rec0], RecMs) of
                         [] ->
                             %% Did not match specification
+                            erlfdb:wait(erlfdb:commit(Tx)),
                             Acc0;
                         [Matched] when WLock =:= false ->
                             %% Matched specification
+                            erlfdb:wait(erlfdb:commit(Tx)),
                             UserFun(Matched, Acc0);
-                        [_Matched] when WLock =:= true ->
+                        [Matched] when WLock =:= true ->
                             %% Matched specification
-                            Tx = erlfdb:create_transaction(Db),
                             ok = erlfdb:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
                             ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
-                            case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
-                                not_found ->
-                                    %% move on.... Already deleted by something else
+                            try
+                                NewAcc = erlfdb:wait(UserFun(St#st{db = Tx}, Matched, Acc0)),
+                                ok = erlfdb:wait(erlfdb:commit(Tx)),
+                                NewAcc
+                            catch
+                                _E:_M:_Stack ->
                                     ok = erlfdb:wait(erlfdb:cancel(Tx)),
-                                    Acc0;
-                                EncVal ->
-                                    Rec2 = erlfdb:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
-                                    NextAcc = try
-                                                  [Match] = ets:match_spec_run([Rec2], RecMs),
-                                                  NewAcc = erlfdb:wait(UserFun(St#st{db = Tx}, Match, Acc0)),
-                                                  ok = erlfdb:wait(erlfdb:commit(Tx)),
-                                                  NewAcc
-                                              catch
-                                                  _E:_M:_Stack ->
-                                                      ok = erlfdb:wait(erlfdb:cancel(Tx)),
-                                                      Acc0
-                                              end,
-                                    NextAcc
+                                    Acc0
                             end
                     end
             end

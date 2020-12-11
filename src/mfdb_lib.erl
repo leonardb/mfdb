@@ -395,12 +395,12 @@ decode_key(<<PfxBytes:8, TabPfx/binary>>,
             exit({TabPfx, BadVal})
     end.
 
-decode_val(_Db, _TabPfx, <<>>) ->
+decode_val(_Tx, _TabPfx, <<>>) ->
     <<>>;
-decode_val(Db, TabPfx, <<"mfdb_ref", _OldSize:32, MfdbRefPartId/binary>>) ->
-    <<_:32, Val/binary>> = parts_value_(MfdbRefPartId, TabPfx, Db),
+decode_val(Tx, TabPfx, <<"mfdb_ref", _OldSize:32, MfdbRefPartId/binary>>) ->
+    <<_:32, Val/binary>> = parts_value_(MfdbRefPartId, TabPfx, Tx),
     binary_to_term(Val);
-decode_val(_Db, _TabPfx, <<_:32, CodedVal/binary>>) ->
+decode_val(_Tx, _TabPfx, <<_:32, CodedVal/binary>>) ->
     binary_to_term(CodedVal).
 
 encode_key(TabPfx, Key) ->

@@ -171,7 +171,7 @@ lookup(Table, PkValue) when is_atom(Table) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
-              case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+              case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
                   not_found ->
                       {error, not_found};
                   EncVal ->
@@ -554,7 +554,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
-              KVs = erlfdb:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
+              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
               LastKey = lists:foldl(
                           fun({EncKey, <<>>}, LastKey) ->
                                   %% Delete the actual expired record
@@ -565,7 +565,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
                                           ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
                                           %% Key2Ttl have to be removed individually
                                           TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                                          ok = erlfdb:wait(erlfdb:clear(Tx, TtlK2T)),
+                                          ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
                                           EncKey;
                                       _ ->
                                           LastKey
@@ -575,7 +575,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
                   ok ->
                       ok;
                   LastKey ->
-                      erlfdb:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
+                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
               end
       end).
 
@@ -981,13 +981,13 @@ intersection(A,B) when is_list(A), is_list(B) ->
 outer_match_fun_(TabPfx, OCompiledKeyMs) ->
     fun(Tx, Id, Acc0) ->
             K = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, Id}),
-            case erlfdb:wait(erlfdb:get(Tx, K)) of
+            case mfdb_lib:wait(erlfdb:get(Tx, K)) of
                 not_found ->
                     %% This should only happen with a dead index
                     %% entry (data deleted after we got index)
                     Acc0;
                 V ->
-                    Rec = erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, V)),
+                    Rec = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, V)),
                     case ets:match_spec_run([Rec], OCompiledKeyMs) of
                         [] ->
                             %% Did not match specification
@@ -1238,12 +1238,12 @@ iter_transaction_(#iter_st{db = Db, tx = Tx} = St) ->
 iter_commit_(undefined) ->
     ok;
 iter_commit_(?IS_TX = Tx) ->
-    try ok = erlfdb:wait(erlfdb:commit(Tx))
+    try ok = mfdb_lib:wait(erlfdb:commit(Tx))
     catch
         _E:{erlfdb_error, ErrCode}:_Stacktrace ->
-            ok = erlfdb:wait(erlfdb:on_error(Tx, ErrCode)),
+            ok = mfdb_lib:wait(erlfdb:on_error(Tx, ErrCode), infinity),
             ErrAtom = mfdb_lib:fdb_err(ErrCode),
-            erlfdb:wait(erlfdb:cancel(Tx)),
+            mfdb_lib:wait(erlfdb:cancel(Tx)),
             {error, ErrAtom}
     end.
 
@@ -1253,7 +1253,7 @@ iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
                       target_bytes = TargetBytes, streaming_mode = StreamingMode,
                       iteration = Iteration, snapshot = Snapshot,
                       reverse = Reverse} = St0) ->
-    try erlfdb:wait(erlfdb_nif:transaction_get_range(
+    try mfdb_lib:wait(erlfdb_nif:transaction_get_range(
                       Tx,
                       StartKey,
                       EndKey,
@@ -1269,7 +1269,7 @@ iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
     catch
         error:{erlfdb_error, Code} ->
             %% We retry for get operations
-            ok = erlfdb:wait(erlfdb:on_error(Tx, Code)),
+            ok = mfdb_lib:wait(erlfdb:on_error(Tx, Code), infinity),
             St = iter_transaction_(St0),
             iter_future_(St)
     end.
@@ -1493,39 +1493,40 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
     fun(#st{db = Db, write_lock = WLock} = St, PkVal, Acc0) ->
             EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
             Tx = erlfdb:create_transaction(Db),
-            case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+            case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
                 not_found ->
                     %% This should only happen with a dead index
                     %% entry (data deleted after we got index)
-                    erlfdb:wait(erlfdb:cancel(Tx)),
+                    mfdb_lib:wait(erlfdb:cancel(Tx)),
                     Acc0;
                 EncVal0 ->
-                    Rec0 = erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, EncVal0)),
+                    Rec0 = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, EncVal0)),
                     case ets:match_spec_run([Rec0], RecMs) of
                         [] ->
                             %% Did not match specification
-                            erlfdb:wait(erlfdb:commit(Tx)),
+                            mfdb_lib:wait(erlfdb:commit(Tx)),
                             Acc0;
                         [Matched] when WLock =:= false ->
                             %% Matched specification
-                            erlfdb:wait(erlfdb:commit(Tx)),
+                            mfdb_lib:wait(erlfdb:commit(Tx)),
                             UserFun(Matched, Acc0);
                         [Matched] when WLock =:= true ->
                             %% Matched specification
-                            ok = erlfdb:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
-                            ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+                            ok = mfdb_lib:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+                            ok = mfdb_lib:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
                             try
-                                NewAcc = erlfdb:wait(UserFun(St#st{db = Tx}, Matched, Acc0)),
-                                ok = erlfdb:wait(erlfdb:commit(Tx)),
+                                NewAcc = mfdb_lib:wait(UserFun(St#st{db = Tx}, Matched, Acc0)),
+                                ok = mfdb_lib:wait(erlfdb:commit(Tx)),
+                                io:format("ffold_rec_match_fun_~p ~p commited~n", [Tx, self()]),
                                 NewAcc
                             catch
                                 error:{erlfdb_error, Code} ->
-                                    error_logger:error_msg("Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
-                                    erlfdb:wait(erlfdb:on_error(Tx, Code), [{timeout, infinity}]),
-                                    ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                                    error_logger:error_msg("ffold_rec_match_fun_Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
+                                    mfdb_lib:wait(erlfdb:on_error(Tx, Code), infinity),
+                                    ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
                                     Acc0;
                                 _E:_M:_Stack ->
-                                    ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                                    ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
                                     Acc0
                             end
                     end
@@ -1621,29 +1622,30 @@ ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock} = St, Inne
 
 ffold_apply_with_transaction_(#st{db = Db, pfx = TblPfx} = St, EncKey, InnerFun, Ms, InnerAcc) ->
     Tx = erlfdb:create_transaction(Db),
-    ok = erlfdb:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
-    ok = erlfdb:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
-    case erlfdb:wait(erlfdb:get(Tx, EncKey)) of
+    ok = mfdb_lib:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+    ok = mfdb_lib:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
         not_found ->
             %% move on.... Already deleted by something else
-            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+            ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
             InnerAcc;
         EncVal ->
-            Rec2 = erlfdb:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
+            Rec2 = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
             case ets:match_spec_run([Rec2], Ms) of
                 [Match] ->
                     try
-                        NewAcc = erlfdb:wait(InnerFun(St#st{db = Tx}, Match, InnerAcc)),
-                        ok = erlfdb:wait(erlfdb:commit(Tx)),
+                        NewAcc = mfdb_lib:wait(InnerFun(St#st{db = Tx}, Match, InnerAcc)),
+                        ok = mfdb_lib:wait(erlfdb:commit(Tx)),
+                        io:format("~p ~p commited~n", [Tx, self()]),
                         NewAcc
                     catch
                         error:{erlfdb_error, Code} ->
-                            error_logger:error_msg("Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
-                            erlfdb:wait(erlfdb:on_error(Tx, Code), [{timeout, infinity}]),
-                            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                            error_logger:error_msg("ffold_apply_with_transaction_ Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
+                            mfdb_lib:wait(erlfdb:on_error(Tx, Code), infinity),
+                            ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
                             InnerAcc;
                         _E:_M:_Stack ->
-                            ok = erlfdb:wait(erlfdb:cancel(Tx)),
+                            ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
                             InnerAcc
                     end
             end
@@ -1673,13 +1675,13 @@ first_(#st{db = Db, pfx = TabPfx} = St, PkStart) ->
       fun(Tx) ->
               StartKey = range_start(TabPfx, PkStart),
               EndKey = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})),
-              case erlfdb:wait(erlfdb:get_range(Tx, StartKey, EndKey, [{limit, ffold_limit_(St)}])) of
+              case mfdb_lib:wait(erlfdb:get_range(Tx, StartKey, EndKey, [{limit, ffold_limit_(St)}])) of
                   [] ->
                       '$end_of_table';
                   KeyVals ->
                       [{EncKey,
                         mfdb_lib:decode_key(TabPfx, EncKey),
-                        erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
+                        mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
                        || {EncKey, Val} <- KeyVals]
               end
       end).
@@ -1690,7 +1692,7 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
       fun(Tx) ->
               SKey = range_start(TabPfx, mfdb_lib:decode_key(TabPfx, PrevKey)),
               EKey = range_end(TabPfx, PkEnd),
-              case erlfdb:wait(erlfdb:get_range(Tx, SKey, EKey, [{limit, ffold_limit_(St)+1}])) of
+              case mfdb_lib:wait(erlfdb:get_range(Tx, SKey, EKey, [{limit, ffold_limit_(St)+1}])) of
                   [] ->
                       '$end_of_table';
                   [{K, _V}] when K =:= PrevKey ->
@@ -1699,7 +1701,7 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
                       KeyVals = lists:keydelete(PrevKey, 1, KeyVals0),
                       [{EncKey,
                         mfdb_lib:decode_key(TabPfx, EncKey),
-                        erlfdb:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
+                        mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
                        || {EncKey, Val} <- KeyVals]
               end
       end).

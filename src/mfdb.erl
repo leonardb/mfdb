@@ -1704,7 +1704,6 @@ range_end(TabPfx, X) ->
     erlfdb_key:strinc(mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X})).
 
 first_(#st{db = Db, pfx = TabPfx} = St, PkStart) ->
-    io:format("first_ ~p~n", [self()]),
     erlfdb:transactional(
       Db,
       fun(Tx) ->
@@ -1725,7 +1724,6 @@ first_(#st{db = Db, pfx = TabPfx} = St, PkStart) ->
       end).
 
 next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
-    io:format("next_ ~p~n", [self()]),
     erlfdb:transactional(
       Db,
       fun(Tx) ->

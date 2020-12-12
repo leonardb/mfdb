@@ -1481,8 +1481,7 @@ ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0)
             DataFun = ffold_idx_match_fun_(St, IdxMs, RecMatchFun),
             ffold_indexed_(St, DataFun, UserAcc, Start, End);
         no_index ->
-            [{MsRec, MsGuard, _}] = Ms,
-            PkStart = case pk2pfx(MsRec, MsGuard) of
+            PkStart = case pk2pfx(Ms) of
                           undefined ->
                               PkStart0;
                           PkPfx ->
@@ -1754,7 +1753,7 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
               end
       end).
 
-pk2pfx(Rec, [{'=:=', '$1', Val}]) ->
+pk2pfx([{Rec, [{'=:=', '$1', Val}], _}]) ->
     [_, Pk | _Tl] = tuple_to_list(Rec),
     case is_tuple(Pk) of
         true ->
@@ -1768,5 +1767,5 @@ pk2pfx(Rec, [{'=:=', '$1', Val}]) ->
         false ->
             undefined
     end;
-pk2pfx(_,_) ->
+pk2pfx(_) ->
     undefined.

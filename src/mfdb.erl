@@ -1468,8 +1468,9 @@ ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0)
                 {[], [], MatchSpec0}
         end,
     Indexes = [I || #idx{} = I <- tuple_to_list(Index)],
+    %%io:format("Guards: ~p~n",[Guards]),
     RangeGuards = range_guards(Guards, Binds, Indexes, []),
-    {PkStart, PkEnd} = primary_table_range_(RangeGuards),
+    {PkStart0, PkEnd} = primary_table_range_(RangeGuards),
     RecMs = ets:match_spec_compile(Ms),
     case idx_sel(RangeGuards, Indexes, St) of
         {use_index, {_IdxPos, {Start, End, Match, Guard}}} = _IdxSel ->
@@ -1480,7 +1481,14 @@ ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0)
             DataFun = ffold_idx_match_fun_(St, IdxMs, RecMatchFun),
             ffold_indexed_(St, DataFun, UserAcc, Start, End);
         no_index ->
-            %% io:format("no index: RangeGuards ~p ~p ~n",[RangeGuards,{PkStart, PkEnd}]),
+            [{MsRec, MsGuard, _}] = Ms,
+            PkStart = case pk2pfx(MsRec, MsGuard) of
+                          undefined ->
+                              PkStart0;
+                          PkPfx ->
+                              PkPfx
+                      end,
+            io:format("no index: RangeGuards ~p ~p ~p ~p~n",[RangeGuards,{PkStart0, PkEnd},PkStart,Ms]),
             ffold_loop_init_(St, UserFun, UserAcc, RecMs, PkStart, PkEnd)
     end.
 
@@ -1745,3 +1753,20 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
                       error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}])
               end
       end).
+
+pk2pfx(Rec, [{'=:=', '$1', Val}]) ->
+    [_, Pk | _Tl] = tuple_to_list(Rec),
+    case is_tuple(Pk) of
+        true ->
+            case tuple_to_list(Pk) of
+                ['$1' | _PkTl] ->
+                    Pfx0 = erlang:make_tuple(size(Pk), ?FDB_WC),
+                    setelement(1, Pfx0, Val);
+                _ ->
+                    undefined
+            end;
+        false ->
+            undefined
+    end;
+pk2pfx(_,_) ->
+    undefined.

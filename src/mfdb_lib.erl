@@ -409,12 +409,19 @@ decode_key(<<PfxBytes:8, TabPfx/binary>>,
 decode_val(_Tx, _TabPfx, <<>>) ->
     <<>>;
 decode_val(Tx, TabPfx, <<"mfdb_ref", _OldSize:32, MfdbRefPartId/binary>>) ->
-    <<_:32, Val/binary>> = _FullVal = parts_value_(MfdbRefPartId, TabPfx, Tx),
-    try binary_to_term(Val)
-    catch error:badarg:_Stack ->
-            error_logger:error_msg("decode failed: ~p", [_FullVal]),
-            io:format("Bad bin: ~p~n", [_FullVal]),
-            <<>>
+    <<_:32, Val/binary>> = FullVal = parts_value_(MfdbRefPartId, TabPfx, Tx),
+    try
+        binary_to_term(Val)
+    catch
+        error:badarg:_Stack ->
+            try
+                binary_to_term(FullVal)
+            catch
+                error:badarg:_Stack2 ->
+                    error_logger:error_msg("decode failed: ~p", [_FullVal]),
+                    io:format("Bad bin: ~p~n", [_FullVal]),
+                    <<>>
+            end
     end;
 decode_val(_Tx, _TabPfx, <<_:32, CodedVal/binary>>) ->
     binary_to_term(CodedVal).

@@ -1548,7 +1548,7 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
     end.
 
 ffold_limit_(#st{write_lock = true}) -> 1;
-ffold_limit_(_) -> 10.
+ffold_limit_(_) -> 100.
 
 ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St)}]) of

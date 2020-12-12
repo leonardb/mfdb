@@ -1487,7 +1487,7 @@ ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0)
                           PkPfx ->
                               PkPfx
                       end,
-            io:format("no index: RangeGuards ~p ~p ~p ~p~n",[RangeGuards,{PkStart0, PkEnd},PkStart,Ms]),
+            %% io:format("no index: RangeGuards ~p ~p ~p ~p~n",[RangeGuards,{PkStart0, PkEnd},PkStart,Ms]),
             ffold_loop_init_(St, UserFun, UserAcc, RecMs, PkStart, PkEnd)
     end.
 

@@ -69,13 +69,15 @@ init([Table, TblPfx, Key]) ->
                not_found -> undefined;
                EncVal -> mfdb_lib:decode_val(Db, TblPfx, EncVal)
            end,
+    error_logger:error_msg("Watcher for ~p with orig ~p", [Key, OVal]),
     Mon = spawn_watcher(Db, TblPfx, Key),
     {ok, #watcher_state{db = Db, table = Table, pfx = TblPfx,
                         key = Key, notifies = [],
                         mon = Mon, orig = OVal}}.
 
 handle_call({subscribe, {notify, NotifyType}, {Pid, _Ref}}, _From,
-            #watcher_state{notifies = Notifies0} = State) ->
+            #watcher_state{notifies = Notifies0,
+                           db = Db, pfx = Prefix, key = Key} = State) ->
     Notifies = case lists:keytake(Pid, 3, Notifies0) of
                    false ->
                        %% Monitor the new subscriber
@@ -87,14 +89,17 @@ handle_call({subscribe, {notify, NotifyType}, {Pid, _Ref}}, _From,
                        Ref = monitor(process, Pid),
                        lists:usort([{notify, NotifyType, Pid, Ref} | Notifies1])
                end,
-    {reply, ok, State#watcher_state{notifies = Notifies}};
+    Val = get_val(Db, Prefix, Key),
+    {reply, ok, State#watcher_state{notifies = Notifies, orig = Val}};
 handle_call({subscribe, {callback, Module, Function}, _PidRef}, _From,
-            #watcher_state{notifies = Notifies0} = State) ->
+            #watcher_state{notifies = Notifies0,
+                           db = Db, pfx = Prefix, key = Key} = State) ->
     %% Callback must be an exported 4-arity function
     case erlang:function_exported(Module, Function, 4) of
         true ->
             Notifies = lists:usort([{callback, Module, Function} | Notifies0]),
-            {reply, ok, State#watcher_state{notifies = Notifies}};
+            Val = get_val(Db, Prefix, Key),
+            {reply, ok, State#watcher_state{notifies = Notifies, orig = Val}};
         false ->
             {reply, {error, function_not_exported}, State}
     end;
@@ -122,28 +127,32 @@ handle_call(_Request, _From, #watcher_state{} = State) ->
 handle_cast(updated, #watcher_state{db = Db, table = Tab0,
                                     pfx = Prefix, key = Key,
                                     notifies = Watchers, orig = Orig} = State) ->
-    EncKey = mfdb_lib:encode_key(Prefix, {?DATA_PREFIX, Key}),
+    error_logger:error_msg("Received update for ~p with orig ~p", [Key, Orig]),
     Table = binary_to_existing_atom(Tab0),
-    NState = case erlfdb:get(Db, EncKey) of
-                 not_found ->
+    Event = case {Orig, get_val(Db, Prefix, Key)} of
+                {Orig, undefined} when Orig =/= undefined ->
+                    deleted;
+                {undefined, Val} when Val =/= undefined ->
+                    {created,  Val};
+                {Orig, Orig} ->
+                    noop;
+                {_Orig, Val} ->
+                    {updated, Val}
+            end,
+    NState = case Event of
+                 deleted ->
                      %% Key was touched and no longer exists
                      notify_(Watchers, {Table, Key, deleted}),
                      State#watcher_state{orig = undefined};
-                 EncVal when Orig =:= undefined ->
+                 {created, NVal} ->
                      %% Key was created
-                     Val = mfdb_lib:decode_val(Db, Prefix, EncVal),
-                     notify_(Watchers, {Table, Key, created, Val}),
-                     State#watcher_state{orig = Val};
-                 EncVal ->
-                     case mfdb_lib:decode_val(Db, Prefix, EncVal) of
-                         Orig ->
-                             %% Value for key is unchanged
-                             State;
-                         Val ->
-                             notify_(Watchers, {Table, Key, updated, Val}),
-                             State#watcher_state{orig = Val}
-                     end
+                     notify_(Watchers, {Table, Key, created, NVal}),
+                     State#watcher_state{orig = NVal};
+                 {updated, NVal} ->
+                     notify_(Watchers, {Table, Key, updated, NVal}),
+                     State#watcher_state{orig = NVal}
              end,
+    error_logger:error_msg("Set ~p event ~p", [Key, Event]),
     {noreply, NState};
 handle_cast(_Request, #watcher_state{} = State) ->
     {noreply, State}.
@@ -157,17 +166,27 @@ handle_info({'DOWN', Ref, process, Pid, _Resp}, #watcher_state{db = Db, pfx = Pr
 handle_info({'EXIT', Pid, _Msg}, #watcher_state{db = Db, pfx = Prefix,
                                                 key = Key, mon = {Pid, Ref}
                                                } = State) ->
+    %% Watcher has exited
     demonitor(Ref),
     Mon = spawn_watcher(Db, Prefix, Key),
     {noreply, State#watcher_state{mon = Mon}};
 handle_info({'EXIT', Pid, _Msg}, #watcher_state{notifies = Notifies0} = State) ->
-    %% Subscriber died so demonitor and maybe shut down watcher
+    %% Subscriber died so demonitor and maybe shut down watcher after a period
     Notifies = remove_notify(Pid, Notifies0),
-    maybe_stop(Notifies, State);
+    erlang:send_after(5000, self(), maybe_stop),
+    {noreply, State#watcher_state{notifies = Notifies}};
 handle_info({'DOWN', _Ref, process, Pid, _Resp}, #watcher_state{notifies = Notifies0} = State) ->
-    %% Subscriber died so demonitor and maybe shut down watcher
+    %% Subscriber died so demonitor and maybe shut down watcher after a period
     Notifies = remove_notify(Pid, Notifies0),
-    maybe_stop(Notifies, State);
+    erlang:send_after(5000, self(), maybe_stop),
+    {noreply, State#watcher_state{notifies = Notifies}};
+handle_info(maybe_stop, #watcher_state{notifies = [],
+                                       mon = {Pid, Ref}} = State) ->
+    demonitor(Ref),
+    exit(Pid, kill),
+    {stop, normal, State#watcher_state{notifies = []}};
+handle_info(maybe_stop, State) ->
+    {noreply, State};
 handle_info(_Info, #watcher_state{} = State) ->
     {noreply, State}.
 
@@ -177,15 +196,6 @@ terminate(_Reason, #watcher_state{mon = {_Pid, Ref}} = _State) ->
 
 code_change(_OldVsn, #watcher_state{} = State, _Extra) ->
     {ok, State}.
-
-maybe_stop([], #watcher_state{mon = {WatcherPid, WatcherRef}} = State) ->
-    %% Nothing is waiting to be notified,
-    %% so stop watching
-    demonitor(WatcherRef),
-    exit(WatcherPid, kill),
-    {stop, normal, State#watcher_state{notifies = []}};
-maybe_stop(Notifies, State) ->
-    {noreply, State#watcher_state{notifies = Notifies}}.
 
 remove_notify(Pid, Notify0) ->
     case lists:keytake(Pid, 3, Notify0) of
@@ -199,6 +209,15 @@ remove_notify(Pid, Notify0) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+get_val(Db, Prefix, Key) ->
+    EncKey = mfdb_lib:encode_key(Prefix, {?DATA_PREFIX, Key}),
+    case erlfdb:get(Db, EncKey) of
+        not_found ->
+            undefined;
+        EncVal ->
+            mfdb_lib:decode_val(Db, Prefix, EncVal)
+    end.
+
 spawn_watcher(Db, Prefix, Key) ->
     spawn_monitor(fun() -> watcher_(Db, Prefix, Key) end).
 

@@ -286,10 +286,19 @@ delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
     ok = delete(NewSt, PkValue),
-    ok = wait(erlfdb:commit(FdbTx));
+    try wait(erlfdb:commit(FdbTx))
+    catch
+        error:{erlfdb_error, ErrCode} ->
+            ok = wait(erlfdb:on_error(FdbTx, ErrCode), infinity),
+            ErrAtom = mfdb_lib:fdb_err(ErrCode),
+            wait(erlfdb:cancel(FdbTx)),
+            {error, ErrAtom}
+    end;
 delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
     %% deleting a data item
     EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
+    ok = wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+    ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
     {IncSize, IncCount} =
         case wait(erlfdb:get(Tx, EncKey)) of
             not_found ->
@@ -308,11 +317,16 @@ delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
                 ok = wait(remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes)),
                 {OldSize * -1, -1}
         end,
-    %% decrement size
-    wait(inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, IncSize)),
-    %% decrement item count
-    wait(inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, IncCount)),
-    ok = wait(erlfdb:clear(Tx, EncKey)).
+    case {IncSize, IncCount} of
+        {0, 0} ->
+            {error, not_found};
+        {IncSize, IncCount} ->
+            %% decrement size
+            wait(inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, IncSize)),
+            %% decrement item count
+            wait(inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, IncCount)),
+            ok = wait(erlfdb:clear(Tx, EncKey))
+    end.
 
 remove_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes) when is_tuple(Indexes) ->
     remove_any_indexes_(Tx, TabPfx, PkValue, Record, tuple_to_list(Indexes));

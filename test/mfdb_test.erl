@@ -45,6 +45,17 @@ stop() ->
     erlfdb:clear_range(Db, <<>>, <<16#FF>>),
     true.
 
+reset_table(test_a, Count) ->
+    ok = mfdb:clear_table(test_a),
+    [mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) || X <- lists:seq(1, Count)],
+    timer:sleep(500),
+    ok;
+reset_table(test_idx, Count) ->
+    ok = mfdb:clear_table(test_idx),
+    [mfdb:insert(test_idx, #test_idx{id = X, value = integer_to_binary(X, 32)}) || X <- lists:seq(1, Count)],
+    timer:sleep(500),
+    ok.
+
 create_and_clear_table() ->
     Ok = mfdb:create_table(test_a, [{record, ?TEST_A}]),
     Ok = mfdb:clear_table(test_a),
@@ -59,16 +70,19 @@ list_tables() ->
     ?assertEqual({error,no_such_table}, mfdb:connect(test_b)).
 
 basic_insert() ->
+    ok = mfdb:clear_table(test_a),
     [mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) || X <- lists:seq(1, 50)],
     {ok, Count} = mfdb:table_info(test_a, count),
     ?assertEqual(50, Count).
 
 basic_lookup() ->
+    reset_table(test_a, 50),
     Rec50In = #test_a{id = 50, value = integer_to_binary(50, 32)},
     {ok, Rec50Out} = mfdb:lookup(test_a, 50),
     ?assertEqual(Rec50In, Rec50Out).
 
 verify_records() ->
+    reset_table(test_a, 50),
     IdSumIn = lists:sum([X || X <- lists:seq(1, 50)]),
     IdSumOut = mfdb:fold(test_a, fun(#test_a{id = X}, Acc) -> Acc + X end, 0),
     ?assertEqual(IdSumIn, IdSumOut).
@@ -82,8 +96,8 @@ counter_inc_dec() ->
     ?assertEqual(-90, mfdb:update_counter(test_a, my_counter, -100)).
 
 watch_for_insert() ->
+    mfdb:clear_table(test_a),
     Id = 51,
-    ok = mfdb:delete(test_a, Id),
     ok = mfdb:subscribe(test_a, Id, {notify, info}),
     DateTime = erlang:universaltime(),
     NewRec = #test_a{id = Id, value = <<"updated">>, other = DateTime},
@@ -91,12 +105,15 @@ watch_for_insert() ->
     Expect = {test_a, Id, created, NewRec},
     receive
         Msg ->
-            ?assertEqual(Expect, Msg)
+            ?assertEqual(Expect, Msg),
+            ok = mfdb:unsubscribe(test_a, Id)
     end.
 
 watch_for_update() ->
+    ok = mfdb:clear_table(test_a),
     Id = 1,
     ok = mfdb:insert(test_a, #test_a{id = Id, value = <<"BaseVal">>, other = undefined}),
+    timer:sleep(100),
     ok = mfdb:subscribe(test_a, Id, {notify, info}),
     DateTime = erlang:universaltime(),
     ExpectRec = #test_a{id = Id, value = <<"updated">>, other = DateTime},
@@ -105,19 +122,26 @@ watch_for_update() ->
     Expect = {test_a, Id, updated, ExpectRec},
     receive
         Msg ->
-            ?assertEqual(Expect, Msg)
+            ?assertEqual(Expect, Msg),
+            ok = mfdb:unsubscribe(test_a, Id)
     end.
 
 watch_for_delete() ->
-    ok = mfdb:subscribe(test_a, 1, {notify, info}),
-    ok = mfdb:delete(test_a, 1),
-    Expect = {test_a, 1, deleted},
+    mfdb:clear_table(test_a),
+    Id = 1,
+    ok = mfdb:insert(test_a, #test_a{id = Id, value = <<"BaseVal">>, other = undefined}),
+    timer:sleep(100),
+    ok = mfdb:subscribe(test_a, Id, {notify, info}),
+    ok = mfdb:delete(test_a, Id),
+    Expect = {test_a, Id, deleted},
     receive
         Msg ->
-            ?assertEqual(Expect, Msg)
+            ?assertEqual(Expect, Msg),
+            ok = mfdb:unsubscribe(test_a, Id)
     end.
 
 select_no_continuation() ->
+    reset_table(test_a, 20),
     Ms = [{#test_a{id = '$1', _ = '_'},[{'=<', '$1', 15}, {'>', '$1', 10}],['$_']}],
     {Recs, '$end_of_table'} = mfdb:select(test_a, Ms),
     ?assertEqual(5, length(Recs)),
@@ -126,7 +150,7 @@ select_no_continuation() ->
     ?assertEqual(ExpectIds, Ids).
 
 select_with_continuation() ->
-    [mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) || X <- lists:seq(1, 100)],
+    reset_table(test_a, 100),
     Ms = [{#test_a{id = '$1', _ = '_'},[{'=<', '$1', 100}, {'>=', '$1', 1}],['$_']}],
     %% Select returns continuations in chunks of 50 records
     {RecsA, Cont} = mfdb:select(test_a, Ms),
@@ -144,6 +168,7 @@ import_from_terms_file() ->
     ?assertEqual({ok, 10}, Added).
 
 check_field_types() ->
+    ok = mfdb:clear_table(test_a),
     Error0 = mfdb:insert(test_a, #test_a{id = <<"one">>}),
     ?assertEqual({error,{id,<<"one">>,not_a_integer}}, Error0),
     Error1 = mfdb:insert(test_a, #test_a{id = 1, value = name_atom}),
@@ -152,8 +177,7 @@ check_field_types() ->
     ?assertEqual({error,invalid_record}, Error2).
 
 fold_simple() ->
-    _ = mfdb:clear_table(test_a),
-    [spawn(fun() -> ok = mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) end) || X <- lists:seq(1,500)],
+    reset_table(test_a, 500),
     timer:sleep(500),
     FoldFun = fun(#test_a{id = Id}, {Cnt, Sum}) -> {Cnt + 1, Sum + Id} end,
     Expected = {500, lists:sum(lists:seq(1,500))},
@@ -161,11 +185,7 @@ fold_simple() ->
     ?assertEqual(Expected, Res).
 
 fold_update() ->
-    ok = mfdb:clear_table(test_a),
-    {ok, TabCnt0} = mfdb:table_info(test_a, count),
-    ?assertEqual(0, TabCnt0),
-    [spawn(fun() -> ok = mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) end) || X <- lists:seq(1,10)],
-    timer:sleep(500),
+    reset_table(test_a, 10),
     {ok, TabCnt} = mfdb:table_info(test_a, count),
     ?assertEqual(10, TabCnt),
     FoldFun = fun(Tx, #test_a{id = Id, value = _Val}, Cnt) ->
@@ -185,10 +205,19 @@ fold_update() ->
 parallel_fold_delete() ->
     %% Multiple processes folding over and deleting data from a table
     %% Ensure only 500 records (count for table) are actually processed
-    _ = mfdb:clear_table(test_a),
-    [spawn(fun() -> ok = mfdb:insert(test_a, #test_a{id = X, value = integer_to_binary(X, 32)}) end) || X <- lists:seq(1,500)],
-    timer:sleep(500),
-    FoldDeleteFun = fun(Tx, #test_a{id = Id}, Acc) -> ok = mfdb:delete(Tx, Id), Acc + 1 end,
+    reset_table(test_a, 500),
+    {ok, TabCnt} = mfdb:table_info(test_a, count),
+    ?assertEqual(500, TabCnt),
+    FoldDeleteFun =
+        fun(#test_a{id = Id}, Acc) ->
+                try ok = mfdb:delete(test_a, Id),
+                     Acc + 1
+                catch
+                    _E:_M:_Stack ->
+                        %% error_logger:error_msg("Skipped ~p because ~p", [Id, {E,M,Stack}]),
+                        Acc
+                end
+        end,
     Self = self(),
     Fold = fun(X) -> Self ! {X, mfdb:fold(test_a, FoldDeleteFun, 0)} end,
     Ids = lists:seq(1,5),

@@ -313,7 +313,7 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
 %%    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
 
 %% @doc Delete a record from the table
--spec delete(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->  ok.
+-spec delete(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->  ok | {error, atom()}.
 delete(Table, PkValue) when is_atom(Table) ->
     #st{} = St = mfdb_manager:st(Table),
     mfdb_lib:delete(St, PkValue);

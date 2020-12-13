@@ -69,7 +69,7 @@ init([Table, TblPfx, Key]) ->
                not_found -> undefined;
                EncVal -> mfdb_lib:decode_val(Db, TblPfx, EncVal)
            end,
-    error_logger:error_msg("Watcher for ~p with orig ~p", [Key, OVal]),
+    %% error_logger:error_msg("Watcher for ~p with orig ~p", [Key, OVal]),
     Mon = spawn_watcher(Db, TblPfx, Key),
     {ok, #watcher_state{db = Db, table = Table, pfx = TblPfx,
                         key = Key, notifies = [],
@@ -127,7 +127,7 @@ handle_call(_Request, _From, #watcher_state{} = State) ->
 handle_cast(updated, #watcher_state{db = Db, table = Tab0,
                                     pfx = Prefix, key = Key,
                                     notifies = Watchers, orig = Orig} = State) ->
-    error_logger:error_msg("Received update for ~p with orig ~p", [Key, Orig]),
+    %% error_logger:error_msg("Received update for ~p with orig ~p", [Key, Orig]),
     Table = binary_to_existing_atom(Tab0),
     Event = case {Orig, get_val(Db, Prefix, Key)} of
                 {Orig, undefined} when Orig =/= undefined ->
@@ -152,7 +152,7 @@ handle_cast(updated, #watcher_state{db = Db, table = Tab0,
                      notify_(Watchers, {Table, Key, updated, NVal}),
                      State#watcher_state{orig = NVal}
              end,
-    error_logger:error_msg("Set ~p event ~p", [Key, Event]),
+    %% error_logger:error_msg("Set ~p event ~p", [Key, Event]),
     {noreply, NState};
 handle_cast(_Request, #watcher_state{} = State) ->
     {noreply, State}.

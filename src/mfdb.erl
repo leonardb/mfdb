@@ -668,7 +668,7 @@ ms_rewrite(HP, Guards) when is_tuple(HP) ->
              (Ms, {Inc, U, Acc}) when is_tuple(Ms) ->
                   Used = lists:foldl(
                            fun(M, UAcc) ->
-                                   case atom_to_binary(M, utf8) of
+                                   case is_atom(M) andalso atom_to_binary(M, utf8) of
                                        <<"\$", _/binary>> ->
                                            [M | UAcc];
                                        _ ->
@@ -1481,13 +1481,13 @@ ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0)
             DataFun = ffold_idx_match_fun_(St, IdxMs, RecMatchFun),
             ffold_indexed_(St, DataFun, UserAcc, Start, End);
         no_index ->
-            PkStart = case pk2pfx(Ms) of
+            PkStart = case pk2pfx_(Ms) of
                           undefined ->
                               PkStart0;
                           PkPfx ->
-                              PkPfx
+                              %% io:format("Generated PkPrefix: ~p~nMs: ~p~n", [PkPfx,Ms]),
+                              {pfx, PkPfx}
                       end,
-            %% io:format("no index: RangeGuards ~p ~p ~p ~p~n",[RangeGuards,{PkStart0, PkEnd},PkStart,Ms]),
             ffold_loop_init_(St, UserFun, UserAcc, RecMs, PkStart, PkEnd)
     end.
 
@@ -1696,6 +1696,8 @@ range_start(TabPfx, {gt, X}) ->
     {mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}), gt};
 range_start(TabPfx, {gte, X}) ->
     {mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}), gteq};
+range_start(TabPfx, {pfx, X}) ->
+    mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, X});
 range_start(TabPfx, X) when X =:= '_' orelse X =:= <<"~">> ->
     mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, X});
 range_start(TabPfx, X) ->
@@ -1753,19 +1755,44 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
               end
       end).
 
-pk2pfx([{Rec, [{'=:=', '$1', Val}], _}]) ->
+%% Creates the longest possible prefix match for tuple-based pk field
+pk2pfx_([{Rec, Guards0, _}])
+  when is_tuple(Rec) andalso
+       is_list(Guards0) ->
+    Guards = lists:foldl(
+               fun({'=:=', K, V}, Acc) ->
+                       [{K, V} | Acc];
+                  (_, Acc) ->
+                       Acc
+               end, [], Guards0),
     [_, Pk | _Tl] = tuple_to_list(Rec),
     case is_tuple(Pk) of
         true ->
-            case tuple_to_list(Pk) of
-                ['$1' | _PkTl] ->
-                    Pfx0 = erlang:make_tuple(size(Pk), ?FDB_WC),
-                    setelement(1, Pfx0, Val);
-                _ ->
-                    undefined
-            end;
+            pk2pfx_mk_key_(tuple_to_list(Pk), Guards, []);
         false ->
             undefined
     end;
-pk2pfx(_) ->
+pk2pfx_(_) ->
     undefined.
+
+pk2pfx_mk_key_([], _Guards, Key) ->
+    list_to_tuple(lists:reverse(Key));
+pk2pfx_mk_key_([?FDB_WC | _] = All, _Guards, Key) ->
+    %% When we encounter a wildcard we need to change the rest of
+    %% the matches to wildcards since we're generating a prefix match
+    Tl = lists:duplicate(length(All), ?FDB_WC),
+    list_to_tuple(lists:append(lists:reverse(Key), Tl));
+pk2pfx_mk_key_([Val | Rest], Guards, Key) when is_atom(Val) ->
+    case atom_to_binary(Val) of
+        <<"\$", _/binary>> ->
+            case lists:keyfind(Val, 1, Guards) of
+                false ->
+                    undefined;
+                {Val, Match} ->
+                    pk2pfx_mk_key_(Rest, Guards, [Match | Key])
+            end;
+        Val ->
+            pk2pfx_mk_key_(Rest, Guards, [Val | Key])
+    end;
+pk2pfx_mk_key_([Val | Rest], Guards, Key) ->
+    pk2pfx_mk_key_(Rest, Guards, [Val | Key]).

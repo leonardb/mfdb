@@ -1791,7 +1791,7 @@ pk2pfx_mk_key_([Val | Rest], Guards, Key) when is_atom(Val) ->
                 {Val, Match} ->
                     pk2pfx_mk_key_(Rest, Guards, [Match | Key])
             end;
-        Val ->
+        _Val ->
             pk2pfx_mk_key_(Rest, Guards, [Val | Key])
     end;
 pk2pfx_mk_key_([Val | Rest], Guards, Key) ->

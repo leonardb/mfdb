@@ -1242,7 +1242,7 @@ iter_commit_(?IS_TX = Tx) ->
     try ok = mfdb_lib:commit(Tx)
     catch
         _E:{erlfdb_error, ErrCode}:_Stacktrace ->
-            ok = mfdb_lib:wait(erlfdb:on_error(Tx, ErrCode), infinity),
+            ok = mfdb_lib:wait(erlfdb:on_error(Tx, ErrCode), 5000),
             ErrAtom = mfdb_lib:fdb_err(ErrCode),
             mfdb_lib:wait(erlfdb:cancel(Tx)),
             {error, ErrAtom};
@@ -1274,7 +1274,7 @@ iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
     catch
         error:{erlfdb_error, Code} ->
             %% We retry for get operations
-            ok = mfdb_lib:wait(erlfdb:on_error(Tx, Code), infinity),
+            ok = mfdb_lib:wait(erlfdb:on_error(Tx, Code), 5000),
             St = iter_transaction_(St0),
             iter_future_(St)
     end.
@@ -1536,7 +1536,7 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
                             catch
                                 error:{erlfdb_error, Code} ->
                                     error_logger:error_msg("ffold_rec_match_fun_Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
-                                    mfdb_lib:wait(erlfdb:on_error(Tx, Code), infinity),
+                                    mfdb_lib:wait(erlfdb:on_error(Tx, Code), 5000),
                                     ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
                                     Acc0;
                                 _E:_M:_Stack ->

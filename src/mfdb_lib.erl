@@ -289,7 +289,7 @@ delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
     try wait(erlfdb:commit(FdbTx))
     catch
         error:{erlfdb_error, ErrCode} ->
-            ok = wait(erlfdb:on_error(FdbTx, ErrCode), infinity),
+            ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
             ErrAtom = mfdb_lib:fdb_err(ErrCode),
             wait(erlfdb:cancel(FdbTx)),
             {error, ErrAtom}
@@ -879,5 +879,5 @@ wait(Something, Timeout) ->
 commit(?IS_TX = Tx) ->
     case erlfdb:is_read_only(Tx) andalso not erlfdb:has_watches(Tx) of
         true -> erlfdb:cancel(Tx), ok;
-        false -> wait(erlfdb:commit(Tx), infinity)
+        false -> wait(erlfdb:commit(Tx), 10000)
     end.

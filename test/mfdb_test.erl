@@ -28,10 +28,11 @@ t_013_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
 t_014_test_() -> {timeout, 10, fun() -> check_field_types() end}.
 t_015_test_() -> {timeout, 60, fun() -> fold_simple() end}.
 t_016_test_() -> {timeout, 60, fun() -> fold_update() end}.
-t_017_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
-t_018_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
-t_019_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
-t_020_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
+t_017_test_() -> {timeout, 60, fun() -> fold_delete() end}.
+t_018_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
+t_019_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
+t_020_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
+t_021_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -219,11 +220,38 @@ parallel_fold_delete() ->
                 end
         end,
     Self = self(),
+    Start = erlang:monotonic_time(millisecond),
     Fold = fun(X) -> Self ! {X, mfdb:fold(test_a, FoldDeleteFun, 0)} end,
     Ids = lists:seq(1,5),
     [spawn(fun() -> Fold(X) end) || X <- Ids],
     Results = recv(Ids, []),
+    End = erlang:monotonic_time(millisecond),
+    Time = End - Start,
+    ?debugFmt("5-process parallel fold of 500 with delete took ~p sec", [Time/1000]),
     ?assertEqual(500, lists:sum([C || {_, C} <- Results])).
+
+fold_delete() ->
+    %% Multiple processes folding over and deleting data from a table
+    %% Ensure only 500 records (count for table) are actually processed
+    reset_table(test_a, 500),
+    {ok, TabCnt} = mfdb:table_info(test_a, count),
+    ?assertEqual(500, TabCnt),
+    FoldDeleteFun =
+        fun(#test_a{id = Id}, Acc) ->
+            try ok = mfdb:delete(test_a, Id),
+            Acc + 1
+            catch
+                _E:_M:_Stack ->
+                    %% error_logger:error_msg("Skipped ~p because ~p", [Id, {E,M,Stack}]),
+                    Acc
+            end
+        end,
+    Start = erlang:monotonic_time(millisecond),
+    Cnt = mfdb:fold(test_a, FoldDeleteFun, 0),
+    End = erlang:monotonic_time(millisecond),
+    Time = End - Start,
+    ?debugFmt("fold of 500 with delete took ~p sec", [Time/1000]),
+    ?assertEqual(500, Cnt).
 
 indexed_select_one() ->
     _ = mfdb:delete_table(test_idx),

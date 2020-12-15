@@ -561,11 +561,16 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
                                   <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
                                   case sext:decode(EncValue) of
                                       {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < Now ->
-                                          ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
-                                          %% Key2Ttl have to be removed individually
-                                          TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                                          ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
-                                          EncKey;
+                                          try
+                                              ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
+                                              %% Key2Ttl have to be removed individually
+                                              TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
+                                              ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
+                                              EncKey
+                                          catch
+                                              _E:_M:_Stack ->
+                                                  LastKey
+                                          end;
                                       _ ->
                                           LastKey
                                   end

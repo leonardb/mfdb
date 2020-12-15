@@ -12,7 +12,7 @@
 -define(IS_TX, {erlfdb_transaction, _}).
 
 %% This sux, but it's the only way I can get around random timeout issues
-t_001_test_() -> {timeout, 10, fun() -> start() end}.
+t_000_test_() -> {timeout, 10, fun() -> start() end}.
 t_002_test_() -> {timeout, 10, fun() -> create_and_clear_table() end}.
 t_003_test_() -> {timeout, 10, fun() -> list_tables() end}.
 t_004_test_() -> {timeout, 10, fun() -> basic_insert() end}.
@@ -27,12 +27,14 @@ t_012_test_() -> {timeout, 10, fun() -> select_with_continuation() end}.
 t_013_test_() -> {timeout, 10, fun() -> import_from_terms_file() end}.
 t_014_test_() -> {timeout, 10, fun() -> check_field_types() end}.
 t_015_test_() -> {timeout, 60, fun() -> fold_simple() end}.
-t_016_test_() -> {timeout, 60, fun() -> fold_update() end}.
-t_017_test_() -> {timeout, 60, fun() -> fold_delete() end}.
-t_018_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
-t_019_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
-t_020_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
-t_021_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
+t_016_test_() -> {timeout, 60, fun() -> fold_limit() end}.
+t_017_test_() -> {timeout, 60, fun() -> fold_update() end}.
+t_018_test_() -> {timeout, 60, fun() -> fold_delete() end}.
+t_019_test_() -> {timeout, 60, fun() -> parallel_fold_delete() end}.
+t_020_test_() -> {timeout, 60, fun() -> parallel_fold_delete2() end}.
+t_021_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
+t_022_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
+t_023_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -185,6 +187,19 @@ fold_simple() ->
     Res = mfdb:fold(test_a, FoldFun, {0, 0}),
     ?assertEqual(Expected, Res).
 
+fold_limit() ->
+    reset_table(test_a, 500),
+    timer:sleep(500),
+    FoldFun = fun(#test_a{id = Id}, {Cnt, Sum}) when Cnt < 250 ->
+                      {Cnt + 1, Sum + Id};
+                 (_, Acc) ->
+                      {'$exit_fold', Acc}
+              end,
+    Expected = {250, lists:sum(lists:seq(1,250))},
+    Res = mfdb:fold(test_a, FoldFun, {0, 0}),
+    ?debugFmt("fold_limit got: ~p", [Res]),
+    ?assertEqual(Expected, Res).
+
 fold_update() ->
     reset_table(test_a, 10),
     {ok, TabCnt} = mfdb:table_info(test_a, count),
@@ -230,6 +245,37 @@ parallel_fold_delete() ->
     ?debugFmt("5-process parallel fold of 500 with delete took ~p sec", [Time/1000]),
     ?assertEqual(500, lists:sum([C || {_, C} <- Results])).
 
+parallel_fold_delete2() ->
+    %% Multiple processes folding over and deleting data from a table
+    %% Ensure only 500 records (count for table) are actually processed
+    reset_table(test_a, 500),
+    {ok, TabCnt} = mfdb:table_info(test_a, count),
+    ?assertEqual(500, TabCnt),
+    FoldDeleteFun =
+        fun(#test_a{id = Id}, Acc) ->
+                [Id | Acc]
+        end,
+    Self = self(),
+    Start = erlang:monotonic_time(millisecond),
+    RecIds =  mfdb:fold(test_a, FoldDeleteFun, []),
+
+    DeleteFun = fun(X) -> Self ! {X, lists:foldl(fun(Id, Acc) ->
+                                                         try ok = mfdb:delete(test_a, Id),
+                                                              Acc + 1
+                                                         catch
+                                                             _E:_M:_Stack ->
+                                                                 %% error_logger:error_msg("Skipped ~p because ~p", [Id, {E,M,Stack}]),
+                                                                 Acc
+                                                         end
+                                                 end, 0, RecIds)} end,
+    Ids = lists:seq(1,5),
+    [spawn(fun() -> DeleteFun(X) end) || X <- Ids],
+    Results = recv(Ids, []),
+    End = erlang:monotonic_time(millisecond),
+    Time = End - Start,
+    ?debugFmt("5-process parallel fold of 500 with delayed delete took ~p sec", [Time/1000]),
+    ?assertEqual(500, lists:sum([C || {_, C} <- Results])).
+
 fold_delete() ->
     %% Multiple processes folding over and deleting data from a table
     %% Ensure only 500 records (count for table) are actually processed
@@ -238,13 +284,13 @@ fold_delete() ->
     ?assertEqual(500, TabCnt),
     FoldDeleteFun =
         fun(#test_a{id = Id}, Acc) ->
-            try ok = mfdb:delete(test_a, Id),
-            Acc + 1
-            catch
-                _E:_M:_Stack ->
-                    %% error_logger:error_msg("Skipped ~p because ~p", [Id, {E,M,Stack}]),
-                    Acc
-            end
+                try ok = mfdb:delete(test_a, Id),
+                     Acc + 1
+                catch
+                    _E:_M:_Stack ->
+                        %% error_logger:error_msg("Skipped ~p because ~p", [Id, {E,M,Stack}]),
+                        Acc
+                end
         end,
     Start = erlang:monotonic_time(millisecond),
     Cnt = mfdb:fold(test_a, FoldDeleteFun, 0),

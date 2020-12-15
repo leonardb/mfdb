@@ -1426,6 +1426,7 @@ fold(Table, InnerFun, InnerAcc)
 %%   Fun(Tx :: opaque(), Record :: dbrec(), Accumulator :: any())
 %%     - with the 3-arity function read/write locks are taken over each step
 %%     - Tx is the internal transaction and is used instead of DbName in any calls to insert/2 or delete/2 inside the Fun
+%%  A fold can be exited early by returning {'$exit_fold', Acc} from the foldfun
 %%  Since InnerFun is applied _before_ the transaction is committed you
 %%  should not perform external operations using the records within the InnerFun
 %%  A contrived example:
@@ -1555,20 +1556,35 @@ ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
 ffold_limit_(#st{write_lock = true}) -> 1;
 ffold_limit_(_) -> 100.
 
+ffold_idx_apply_fun_([], _TabPfx, _MatchFun, Acc) ->
+    Acc;
+ffold_idx_apply_fun_([{K, _V} | Rest], TabPfx, MatchFun, Acc) ->
+    case MatchFun(mfdb_lib:decode_key(TabPfx, K), Acc) of
+        {'$exit_fold', NAcc} ->
+            {'$exit_fold', NAcc};
+        NAcc ->
+            ffold_idx_apply_fun_(Rest, TabPfx, MatchFun, NAcc)
+    end.
+
 ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St)}]) of
         [] ->
             [];
         [{LastKey, _}] when WLock =:= true ->
-            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
-            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+            case MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc) of
+                {'$exit_fold', NAcc} ->
+                    NAcc;
+                NAcc ->
+                    ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            end;
         KeyVals when WLock =:= false ->
-            {LastKey, _} = lists:last(KeyVals),
-            NAcc = lists:foldl(
-                     fun({K, _}, OAcc) ->
-                             MatchFun(mfdb_lib:decode_key(TabPfx, K), OAcc)
-                     end, InAcc, KeyVals),
-            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            case ffold_idx_apply_fun_(KeyVals, TabPfx, MatchFun, InAcc) of
+                {'$exit_fold', NAcc} ->
+                    NAcc;
+                NAcc ->
+                    {LastKey, _} = lists:last(KeyVals),
+                    ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            end
     end.
 
 ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, Start0, End) ->
@@ -1579,22 +1595,35 @@ ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFu
         [{Start0, _}] ->
             InAcc;
         [{Start0, _}, {LastKey, _}] when WLock =:= true ->
-            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
-            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+            case MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc) of
+                {'$exit_fold', NAcc} ->
+                    NAcc;
+                NAcc ->
+                    ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            end;
         [{LastKey, _}, _] when WLock =:= true ->
-            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
-            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+            case MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc) of
+                {'$exit_fold', NAcc} ->
+                    NAcc;
+                NAcc ->
+                    ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            end;
         [{LastKey, _}] when WLock =:= true ->
-            NAcc = MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc),
-            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End);
+            case MatchFun(mfdb_lib:decode_key(TabPfx, LastKey), InAcc) of
+                {'$exit_fold', NAcc} ->
+                    NAcc;
+                NAcc ->
+                    ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            end;
         KeyVals0 when WLock =:= false ->
             KeyVals = lists:keydelete(Start0, 1, KeyVals0),
-            {LastKey, _} = lists:last(KeyVals),
-            NAcc = lists:foldl(
-                     fun({K, _}, OAcc) ->
-                             MatchFun(mfdb_lib:decode_key(TabPfx, K), OAcc)
-                     end, InAcc, KeyVals),
-            ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            case ffold_idx_apply_fun_(KeyVals, TabPfx, MatchFun, InAcc) of
+                {'$exit_fold', NAcc} ->
+                    NAcc;
+                NAcc ->
+                    {LastKey, _} = lists:last(KeyVals),
+                    ffold_indexed_cont_(#st{db = Db} = St, MatchFun, NAcc, LastKey, End)
+            end
     end.
 
 ffold_loop_init_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkStart, PkEnd) ->
@@ -1608,19 +1637,25 @@ ffold_loop_init_(#st{db = Db} = St, InnerFun, InnerAcc, Ms, PkStart, PkEnd) ->
 
 ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
     %%error_logger:info_msg("LastKey: ~p KeyVals: ~p", [LastKey, KeyVals]),
-    NewAcc = ffold_loop_recs(KeyVals, St, InnerFun, Ms, InnerAcc),
-    case next_(St, LastKey, PkEnd) of
-        '$end_of_table' when is_list(NewAcc) ->
+    case ffold_loop_recs(KeyVals, St, InnerFun, Ms, InnerAcc) of
+        {'$exit_fold', NewAcc} when is_list(NewAcc) ->
             lists:reverse(NewAcc);
-        '$end_of_table' ->
+        {'$exit_fold', NewAcc} ->
             NewAcc;
-        [] when is_list(NewAcc) ->
-            lists:reverse(NewAcc);
-        [] ->
-            NewAcc;
-        KeyValues ->
-            {NewLastKey, _, _} = lists:last(KeyValues),
-            ffold_loop_cont_(St, InnerFun, NewAcc, Ms, PkEnd, NewLastKey, KeyValues)
+        NewAcc ->
+            case next_(St, LastKey, PkEnd) of
+                '$end_of_table' when is_list(NewAcc) ->
+                    lists:reverse(NewAcc);
+                '$end_of_table' ->
+                    NewAcc;
+                [] when is_list(NewAcc) ->
+                    lists:reverse(NewAcc);
+                [] ->
+                    NewAcc;
+                KeyValues ->
+                    {NewLastKey, _, _} = lists:last(KeyValues),
+                    ffold_loop_cont_(St, InnerFun, NewAcc, Ms, PkEnd, NewLastKey, KeyValues)
+            end
     end.
 
 ffold_loop_recs([], _St, _InnerFun, _Ms, InnerAcc) ->
@@ -1631,12 +1666,20 @@ ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock} = St, Inne
             %% Record did not match specification
             ffold_loop_recs(Rest, St, InnerFun, Ms, InnerAcc);
         [_Match] when is_function(InnerFun, 3) andalso WLock =:= true ->
-            NewAcc = ffold_apply_with_transaction_(St, EncKey, InnerFun, Ms, InnerAcc),
-            ffold_loop_recs(Rest, St, InnerFun, Ms, NewAcc);
+            case ffold_apply_with_transaction_(St, EncKey, InnerFun, Ms, InnerAcc) of
+                {'$exit_fold', NewAcc} ->
+                    {'$exit_fold', NewAcc};
+                NewAcc ->
+                    ffold_loop_recs(Rest, St, InnerFun, Ms, NewAcc)
+            end;
         [Match] when is_function(InnerFun, 2) andalso WLock =:= false ->
             %% Record matched specification, is a fold operation, apply the supplied DataFun
-            NewAcc = InnerFun(Match, InnerAcc),
-            ffold_loop_recs(Rest, St, InnerFun, Ms, NewAcc)
+            case InnerFun(Match, InnerAcc) of
+                {'$exit_fold', NewAcc} ->
+                    {'$exit_fold', NewAcc};
+                NewAcc ->
+                    ffold_loop_recs(Rest, St, InnerFun, Ms, NewAcc)
+            end
     end.
 
 %%ffold_apply_with_transaction_(#st{db = Db, pfx = TblPfx} = St, EncKey, InnerFun, Ms, InnerAcc) ->

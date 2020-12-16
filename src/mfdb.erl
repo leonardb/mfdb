@@ -54,6 +54,7 @@
 
 %% @private
 -export([do_import_/3]).
+-export([do_import_/4]).
 
 %% gen_server API
 -export([start_link/1,
@@ -1302,7 +1303,10 @@ rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
 %% @doc The do_import is based off of file:consult/1 code which reads in terms from a file
 %% @hidden
 do_import_(Table, SourceFile, ImportId) ->
-    #st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+    do_import_(Table, SourceFile, ImportId, true).
+
+do_import_(Table, SourceFile, ImportId, Overwrite) ->
+    #st{record_name = RecName, pfx = TblPfx, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
     TtlPos = case Ttl of
                  {field, Pos} -> Pos;
                  _ -> -1
@@ -1321,6 +1325,20 @@ do_import_(Table, SourceFile, ImportId) ->
                         false ->
                             fun mfdb_lib:check_index_sizes/2
                     end,
+    WriteFun = case Overwrite of
+                   true ->
+                       fun mfdb_lib:write/3;
+                   false ->
+                       fun(#st{db = Db} = InSt, InKey, InObject) ->
+                               EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, element(2, InObject)}),
+                               case erlfdb:get(Db, EncKey) of
+                                   not_found ->
+                                       mfdb_lib:write(InSt, InKey, InObject);
+                                   _EncVal ->
+                                       ok
+                               end
+                       end
+               end,
     ImportFun =
         fun(ObjectTuple, Cnt) ->
                 [RName | ObjectList] = tuple_to_list(ObjectTuple),
@@ -1331,7 +1349,7 @@ do_import_(Table, SourceFile, ImportId) ->
                 Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
                         {TypeCheckFun, [ObjectList, Fields, TtlPos]},
                         {IndexCheckFun, [ObjectList, IndexList]},
-                        {fun mfdb_lib:write/3, [St, RKey, ObjectTuple]}],
+                        {WriteFun, [St, RKey, ObjectTuple]}],
                 try mfdb_lib:flow(Flow, true) of
                     ok ->
                         Cnt + 1;

@@ -285,14 +285,18 @@ mk_tx(#st{db = ?IS_DB = Db, write_lock = true} = St) ->
 delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
-    ok = delete(NewSt, PkValue),
-    try wait(erlfdb:commit(FdbTx))
-    catch
-        error:{erlfdb_error, ErrCode} ->
-            ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
-            ErrAtom = mfdb_lib:fdb_err(ErrCode),
-            wait(erlfdb:cancel(FdbTx)),
-            {error, ErrAtom}
+    case delete(NewSt, PkValue) of
+        {error, not_found} ->
+            ok;
+        ok ->
+            try wait(erlfdb:commit(FdbTx))
+            catch
+                error:{erlfdb_error, ErrCode} ->
+                    ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
+                    ErrAtom = mfdb_lib:fdb_err(ErrCode),
+                    wait(erlfdb:cancel(FdbTx)),
+                    {error, ErrAtom}
+            end
     end;
 delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
     %% deleting a data item

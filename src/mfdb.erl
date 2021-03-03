@@ -1306,7 +1306,7 @@ rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
 %% @doc The do_import is based off of file:consult/1 code which reads in terms from a file
 %% @hidden
 do_import_(Table, SourceFile, ImportId) ->
-    do_import_(Table, SourceFile, ImportId, true).
+    do_import_(Table, SourceFile, ImportId, false).
 
 do_import_(Table, SourceFile, ImportId, Overwrite) ->
     #st{record_name = RecName, pfx = TblPfx, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),

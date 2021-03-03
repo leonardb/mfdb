@@ -140,7 +140,7 @@
          start_key :: any(),
          start_sel :: selector(),
          end_sel :: selector(),
-         limit :: pos_integer(),
+         limit = 10000 :: pos_integer(),
          target_bytes :: integer(),
          streaming_mode :: atom(),
          iteration :: pos_integer(),

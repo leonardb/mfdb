@@ -1310,6 +1310,7 @@ do_import_(Table, SourceFile, ImportId) ->
 
 do_import_(Table, SourceFile, ImportId, Overwrite) ->
     #st{record_name = RecName, pfx = TblPfx, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+    Fname = iolist_to_binary(filename:basename(SourceFile)),
     TtlPos = case Ttl of
                  {field, Pos} -> Pos;
                  _ -> -1
@@ -1359,17 +1360,17 @@ do_import_(Table, SourceFile, ImportId, Overwrite) ->
                     skipped ->
                         ReplyTo ! {ok, 0};
                     _Other ->
-                        error_logger:error_msg("Import error: ~p ~p", [_Other, ObjectTuple]),
+                        error_logger:error_msg("~s Import error: ~p ~p", [Fname, _Other, ObjectTuple]),
                         ReplyTo ! {ok, 0}
                 catch
                     E:M:Stack ->
-                        error_logger:error_msg("Import error: ~p", [{E,M,Stack}]),
+                        error_logger:error_msg("~s Import error: ~p", [Fname, {E,M,Stack}]),
                         ReplyTo ! {ok, 0}
                 end
         end,
     case file:open(SourceFile, [read]) of
         {ok, Fd} ->
-            R = consult_stream(Fd, ImportFun),
+            R = consult_stream(Fd, Fname, ImportFun),
             _ = file:close(Fd),
             exit({normal, {ImportId, {ok, R}}});
         Error ->
@@ -1377,12 +1378,12 @@ do_import_(Table, SourceFile, ImportId, Overwrite) ->
     end.
 
 %% @private
-consult_stream(Fd, Fun) ->
+consult_stream(Fd, Fname, Fun) ->
     _ = epp:set_encoding(Fd),
-    consult_stream(Fd, 1, Fun, [], 0).
+    consult_stream(Fd, 1, Fname, Fun, [], 0).
 
 %% @private
-consult_stream(Fd, Line, Fun, Acc0, Cnt) ->
+consult_stream(Fd, Line, Fname, Fun, Acc0, Cnt) ->
     case io:read(Fd, '', Line) of
         {ok, Term, EndLine} ->
             NAcc = case (Cnt rem 5000) =:= 0 of
@@ -1390,33 +1391,33 @@ consult_stream(Fd, Line, Fun, Acc0, Cnt) ->
                            Self = self(),
                            Pids = [spawn(fun() -> Fun(Self, X) end) || X <- Acc0],
                            L = length(Pids),
-                           rev_import_results(L, L, 0),
-                           io:format("Import ~p so far~n", [Cnt]),
+                           rev_import_results(Fname, L, L, 0),
+                           io:format("~s Import ~p so far~n", [Fname, Cnt]),
                            [Term];
                        false ->
                            [Term | Acc0]
                    end,
-            consult_stream(Fd, EndLine, Fun, NAcc, Cnt + 1);
+            consult_stream(Fd, EndLine, Fname, Fun, NAcc, Cnt + 1);
         {error, Error, _Line} ->
             {error, Error};
         {eof, _Line} ->
             Self = self(),
             Pids = [spawn(fun() -> Fun(Self, X) end) || X <- Acc0],
             L = length(Pids),
-            rev_import_results(L, L, 0),
+            rev_import_results(Fname, L, L, 0),
             ok
     end.
 
-rev_import_results(Tot, 0, Added) ->
-    io:format("Import added ~p of ~p completed~n", [Added, Tot]),
+rev_import_results(Fname, Tot, 0, Added) ->
+    io:format("~s Import added ~p of ~p completed~n", [Fname, Added, Tot]),
     ok;
-rev_import_results(Tot, Cnt, Added) ->
+rev_import_results(Fname, Tot, Cnt, Added) ->
     receive
         {ok, Add} ->
-            rev_import_results(Tot, Cnt - 1, Added + Add)
+            rev_import_results(Fname, Tot, Cnt - 1, Added + Add)
     after
         60000 ->
-            error_logger:error_msg("Import failed"),
+            error_logger:error_msg("~s Import failed", [Fname]),
             ok
     end.
 

@@ -35,7 +35,8 @@
 -export([delete/2]).
 
 -export([set_counter/3,
-         update_counter/3]).
+         update_counter/3,
+         delete_counter/2]).
 
 -export([lookup/2]).
 
@@ -284,6 +285,12 @@ validate_updates_([{FieldName, FieldType} | Rest], Changes, Pos, ChangeTuple, Va
 update_counter(Table, Key, Increment) when is_atom(Table) andalso is_integer(Increment) ->
     #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
     mfdb_lib:update_counter(Db, TabPfx, Key, Increment).
+
+%% @doc Atomic counter delete
+-spec delete_counter(Table :: table_name(), Key :: any()) -> ok.
+delete_counter(Table, Key) when is_atom(Table) ->
+    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
+    mfdb_lib:delete_counter(Db, TabPfx, Key).
 
 %% @doc Atomic set of a counter value
 -spec set_counter(Table :: table_name(), Key :: any(), Value :: integer()) -> ok.

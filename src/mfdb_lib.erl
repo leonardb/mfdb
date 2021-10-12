@@ -31,6 +31,7 @@
          table_count/1,
          table_data_size/1,
          update_counter/4,
+         delete_counter/3,
          set_counter/4,
          validate_reply_/1,
          unixtime/0,
@@ -504,6 +505,15 @@ counter_read_(Tx, TabPfx, Key) ->
         KVs ->
             lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
     end.
+
+
+delete_counter(?IS_DB = Db, TabPfx, Key) ->
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+              ok = wait(erlfdb:clear_range_startswith(Tx, Pfx))
+      end).
 
 validate_indexes([], _Record) ->
     ok;

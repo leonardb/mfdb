@@ -57,7 +57,7 @@
 -include("mfdb.hrl").
 
 -define(SECONDS_TO_EPOCH, (719528*24*3600)).
--define(ENTRIES_PER_COUNTER, 50).
+-define(ENTRIES_PER_COUNTER, 10).
 
 -type flow_fun()    :: fun((...) -> any()).
 -type flow_args()   :: list(any()).
@@ -469,23 +469,26 @@ save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
     save_parts_(Tx, TabPfx, PartId, PartInc + 1, <<>>).
 
 update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
-    Tx = erlfdb:create_transaction(Db),
-    try do_update_counter(Tx, TabPfx, Key, Incr)
+    try do_update_counter(Db, TabPfx, Key, Incr)
     catch
+        error:{erlfdb_error,1020}:_Stack ->
+            error_logger:error_msg("Update counter transaction cancelled, retrying"),
+            update_counter(Db, TabPfx, Key, Incr);
         error:{erlfdb_error,1025}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),
-            wait(erlfdb:cancel(Tx)),
             update_counter(Db, TabPfx, Key, Incr)
     end.
 
-do_update_counter(Tx, TabPfx, Key, Increment) ->
-    %% Increment random counter
-    EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
-    wait(erlfdb:add(Tx, EncKey, Increment)),
-    %% Read the updated counter value
-    NewVal = counter_read_(Tx, TabPfx, Key),
-    wait(erlfdb:commit(Tx)),
-    NewVal.
+do_update_counter(Db, TabPfx, Key, Increment) ->
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              %% Increment random counter
+              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
+              wait(erlfdb:add(Tx, EncKey, Increment)),
+              %% Read the updated counter value
+              counter_read_(Tx, TabPfx, Key)
+      end).
 
 set_counter(?IS_DB = Db, TabPfx, Key, Value) ->
     erlfdb:transactional(
@@ -505,7 +508,6 @@ counter_read_(Tx, TabPfx, Key) ->
         KVs ->
             lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
     end.
-
 
 delete_counter(?IS_DB = Db, TabPfx, Key) ->
     erlfdb:transactional(

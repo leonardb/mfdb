@@ -66,7 +66,7 @@
          terminate/2,
          code_change/3]).
 
--export([reaper_test/1]).
+-export([reaper_test_callback/1]).
 
 -include("mfdb.hrl").
 -define(REAP_POLL_INTERVAL, 5000).
@@ -647,7 +647,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
               end
       end).
 
-reaper_test(Record) ->
+reaper_test_callback(Record) ->
     io:format("REAPER TEST: ~p~n", [Record]),
     ok.
 

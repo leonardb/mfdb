@@ -68,6 +68,7 @@
 -type table_ttl()   :: {table, ttl_period()}.
 -type ttl()         :: field_ttl() | table_ttl().
 -type ttls()        :: list(ttl()).
+-type ttl_callback() :: {atom(), atom()}. %% {module, function}
 -type table_name()  :: atom().
 -type field_name()  :: atom().
 -type field_type()  :: binary | integer | float | list | tuple | date | datetime | time | inet | inet4 | inet6 | atom | any | term | undefined | null.
@@ -79,7 +80,11 @@
 -type continuation() :: function().
 -type field_changes() :: list({field(), any()}).
 
--type option() :: {record, mfdbrecord()} | {indexes, indexes()} | {table_ttl, ttl()} | {field_ttl, index()}.
+-type option() :: {record, mfdbrecord()} |
+                  {indexes, indexes()} |
+                  {table_ttl, ttl()} |
+                  {field_ttl, index()} |
+                  {ttl_callback, ttl_callback()}.
 -type options() :: list(option()).
 
 -type watcher_callback() :: {callback, atom(), atom()}.
@@ -119,6 +124,7 @@
          hca_ref,   %% opaque :: #erlfdb_hca{} record used for mfdb_part() keys    :: erlfdb_hca:create(<<"parts_", TableId/binary>>).
          info           = [],
          ttl            = undefined     :: undefined | ttl(),
+         ttl_callback   = undefined     :: undefined | ttl_callback(),
          write_lock     = false         :: boolean()
         }).
 

@@ -66,8 +66,10 @@
          terminate/2,
          code_change/3]).
 
+-export([reaper_test/1]).
+
 -include("mfdb.hrl").
--define(REAP_POLL_INTERVAL, 30000).
+-define(REAP_POLL_INTERVAL, 5000).
 
 -type dbrec() :: tuple().
 -type foldfun() :: fun((fdb_tx(), dbrec(), any()) -> any()) | fun((dbrec(), any()) -> any()).
@@ -131,7 +133,8 @@ table_info(Table, InfoOpt)
         InfoOpt =:= count orelse
         InfoOpt =:= fields orelse
         InfoOpt =:= indexes orelse
-        InfoOpt =:= ttl) ->
+        InfoOpt =:= ttl orelse
+        InfoOpt =:= ttl_callback) ->
     try gen_server:call(?TABPROC(Table), {table_info, InfoOpt})
     catch
         exit:{noproc, _}:_Stack ->
@@ -392,7 +395,7 @@ handle_call({import, SourceFile}, From, #{table := Table} = State) ->
     NewWaiters = [{ImportId, Pid, Ref, From} | OldWaiters],
     {noreply, State#{waiters => NewWaiters}};
 handle_call({table_info, all}, _From, #{table := Table} = State) ->
-    #st{fields = Fields, index = Index, ttl = Ttl0} = St = mfdb_manager:st(Table),
+    #st{fields = Fields, index = Index, ttl = Ttl0, ttl_callback = TtlCb} = St = mfdb_manager:st(Table),
     Count = mfdb_lib:table_count(St),
     Size = mfdb_lib:table_data_size(St),
     Indexes = [P || #idx{pos = P} <- tuple_to_list(Index)],
@@ -400,13 +403,19 @@ handle_call({table_info, all}, _From, #{table := Table} = State) ->
             {size, Size},
             {fields, Fields},
             {indexes, Indexes}],
+    All1 = case TtlCb of
+               undefined ->
+                   All0;
+               TtlCb ->
+                   [{ttl_callback, TtlCb} | All0]
+           end,
     All = case Ttl0 of
               {field, Pos} ->
-                  [{field_ttl, Pos} | All0];
+                  [{field_ttl, Pos} | All1];
               {table, T} ->
-                  [{table_ttl, T} | All0];
+                  [{table_ttl, T} | All1];
               undefined ->
-                  All0
+                  All1
           end,
     {reply, {ok, All}, State};
 handle_call({table_info, count}, _From, #{table := Table} = State) ->
@@ -435,6 +444,9 @@ handle_call({table_info, ttl}, _From, #{table := Table} = State) ->
                   no_ttl
           end,
     {reply, {ok, Ttl}, State};
+handle_call({table_info, ttl_callback}, _From, #{table := Table} = State) ->
+    #st{ttl_callback = TtlCb} = mfdb_manager:st(Table),
+    {reply, {ok, TtlCb}, State};
 handle_call({subscribe, ReplyType, Key}, From, #{table := Table} = State) ->
     #st{pfx = TblPfx, tab = Tab} = mfdb_manager:st(Table),
     Reply = key_subscribe_(Tab, ReplyType, From, TblPfx, Key),
@@ -557,6 +569,50 @@ reap_expired_(Table) ->
     end.
 
 %% @private
+reap_expired_(#st{db = Db, tab = Tab0, pfx = TabPfx0, ttl = {field, _FieldIdx}, ttl_callback = {Mod, Fun}}, RangeStart, RangeEnd, Now) ->
+    %% Expiration with callbacks *only* supported for field-based TTLs,
+    %% *NOT* Table based TTLs
+    Tab = binary_to_existing_atom(Tab0),
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
+              LastKey =
+                  lists:foldl(
+                    fun({EncKey, <<>>}, LKey0) ->
+                            %% Delete the actual expired record
+                            <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+                            <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
+                            case sext:decode(EncValue) of
+                                {?TTL_TO_KEY_PFX, {{_, _, _}, {_, _, _}} = Expires, RecKey} when Expires < Now ->
+                                    %% get the record
+                                    {ok, Record} = lookup(Tab, RecKey),
+                                    %% Key2Ttl have to be removed individually.
+                                    %% This must be done before handing to callback
+                                    %% since callback may save record with a new TTL
+                                    TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
+                                    ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
+                                    %% Pass to the callback
+                                    try Mod:Fun(Record) of
+                                        ok ->
+                                            EncKey
+                                    catch
+                                        _E:_M:_Stack ->
+                                            io:format("PROBLEM!!: ~p~n", [{_E,_M,_Stack}]),
+                                            LKey0
+                                    end;
+                                _ ->
+                                    LKey0
+                            end
+                    end, ok, KVs),
+              case LastKey of
+                  ok ->
+                      ok;
+                  LastKey ->
+                      %% Finally clear the TTL2Rec entries for the covered range
+                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
+              end
+      end);
 reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
     erlfdb:transactional(
       Db,
@@ -590,6 +646,10 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
                       mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
               end
       end).
+
+reaper_test(Record) ->
+    io:format("REAPER TEST: ~p~n", [Record]),
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

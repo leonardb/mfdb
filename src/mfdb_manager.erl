@@ -84,7 +84,8 @@ handle_call({create_table, Table, Options}, _From, S) ->
                 {ok, Indexes} = indexes_(Options),
                 case ttl_(Options, Record) of
                     {ok, Ttl} ->
-                        create_table_(atom_to_binary(Table), Record, Indexes, Ttl);
+                        TtlCallback = ttl_callback_(Options),
+                        create_table_(atom_to_binary(Table), Record, Indexes, Ttl, TtlCallback);
                     TtlErr ->
                         TtlErr
                 end;
@@ -104,9 +105,32 @@ handle_call(table_list, _From, S) ->
             TablesPfx = sext:prefix({KeyId, <<"table">>, ?FDB_WC}),
             Tables0 = erlfdb:get_range_startswith(Db, TablesPfx),
             Tables = [begin
-                          #st{tab = Table} = binary_to_term(TabEnc),
-                          binary_to_atom(Table)
-                      end || {_TabKey, TabEnc} <- Tables0],
+                          case binary_to_term(TabEnc) of
+                              #st{tab = Table} ->
+                                  binary_to_atom(Table);
+                              {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
+                                  Db0, TableId, Pfx, HcaRef, Info, Ttl, WriteLock} ->
+                                  NTabSt = #st{tab = Tab,
+                                               key_id = KeyId0,
+                                               alias = Alias,
+                                               record_name = RecordName,
+                                               fields = Fields,
+                                               index = Index,
+                                               db = Db0,
+                                               table_id = TableId,
+                                               pfx = Pfx,
+                                               hca_ref = HcaRef,
+                                               info = Info,
+                                               ttl = Ttl,
+                                               write_lock = WriteLock},
+                                  erlfdb:transactional(
+                                    Db,
+                                    fun(Tx) ->
+                                            erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+                                    end),
+                                  binary_to_atom(Tab)
+                          end
+                      end || {TabKey, TabEnc} <- Tables0],
             {reply, {ok, Tables}, S}
     end;
 handle_call(_, _, S) ->
@@ -142,6 +166,13 @@ ttl_(Options, {_, Fields}) ->
                   TtlFieldPos =< MaxFieldIdx ->
                 %% Make sure field at position X is typed as a datetime
                 case lists:nth(TtlFieldPos - 1, Fields) of
+                    {_FName, Types} when is_list(Types) ->
+                        case lists:member(datetime, Types) of
+                            true ->
+                                TtlFieldPos;
+                            false ->
+                                invalid_ttl
+                        end;
                     {_FName, datetime} ->
                         TtlFieldPos;
                     _ ->
@@ -176,6 +207,19 @@ ttl_(Options, {_, Fields}) ->
             {error, invalid_ttl}
     end.
 
+ttl_callback_(Options) ->
+    case proplists:get_value(ttl_callback, Options, undefined) of
+        undefined ->
+            undefined;
+        {Mod, Fun} ->
+            case erlang:function_exported(Mod, Fun, 1) of
+                true ->
+                    {Mod, Fun};
+                false ->
+                    undefined
+            end
+    end.
+
 delete_table_(Tab) ->
     case persistent_term:get({mfdb, Tab}, undefined) of
         #st{db = Db, key_id = KeyId, index = Indexes, pfx = TblPfx} ->
@@ -208,14 +252,14 @@ load_table_(Tab) ->
             ok
     end.
 
-create_table_(Tab, Record0, Indexes, Ttl) when is_binary(Tab) ->
+create_table_(Tab, Record0, Indexes, Ttl, TtlCallback) when is_binary(Tab) ->
     #conn{key_id = KeyId} = Conn = persistent_term:get(mfdb_conn),
     Db = mfdb_conn:connection(Conn),
     %% Functions must return 'ok' to continue, anything else will exit early
     Record = record_(Record0),
     Flow = [{fun mfdb_lib:validate_record/1, [Record]},
             {fun mfdb_lib:validate_indexes/2, [Indexes, Record]},
-            {fun table_create_if_not_exists_/6, [Db, KeyId, Tab, Record, Indexes, Ttl]}],
+            {fun table_create_if_not_exists_/7, [Db, KeyId, Tab, Record, Indexes, Ttl, TtlCallback]}],
     mfdb_lib:flow(Flow, ok).
 
 %% Set any unspecified fields as 'any' type
@@ -226,13 +270,13 @@ table_exists_(Db, TabKey) ->
     %% Does a table config exist
     erlfdb:get(Db, TabKey) =/= not_found.
 
-table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl) ->
+table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl, TtlCallback) ->
     TabKey = sext:encode({KeyId, <<"table">>, Table}),
     TableSt = case table_exists_(Db, TabKey) of
                   false ->
                       Hca = erlfdb_hca:create(<<"hca_table">>),
                       TableId = erlfdb_hca:allocate(Hca, Db),
-                      #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes, Ttl),
+                      #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes, Ttl, TtlCallback),
                       ok = erlfdb:set(Db, TabKey, term_to_binary(TableSt0)),
                       TableSt0;
                   true ->
@@ -243,7 +287,7 @@ table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl) ->
     ok = persistent_term:put({mfdb, Table}, TableSt#st{db = Db}),
     ok = mfdb_table_sup:add(binary_to_atom(Table)).
 
-mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl) ->
+mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl, TtlCallback) ->
     HcaRef = erlfdb_hca:create(<<TableId/binary, "_hca_ref">>),
     Pfx = <<(byte_size(KeyId) + byte_size(TableId) + 2),
             (byte_size(KeyId)), KeyId/binary,
@@ -259,7 +303,8 @@ mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl) ->
              hca_ref     = HcaRef,
              pfx         = Pfx,
              info        = [],
-             ttl         = Ttl
+             ttl         = Ttl,
+             ttl_callback = TtlCallback
             },
     %% Convert indexes to records and add to the table state
     create_indexes_(Indexes, St0).

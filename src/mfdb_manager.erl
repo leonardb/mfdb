@@ -212,12 +212,8 @@ ttl_callback_(Options) ->
         undefined ->
             undefined;
         {Mod, Fun} ->
-            case erlang:function_exported(Mod, Fun, 1) of
-                true ->
-                    {Mod, Fun};
-                false ->
-                    undefined
-            end
+            %% We cannot check if function is exported in app using mfdb as dep
+            {Mod, Fun}
     end.
 
 delete_table_(Tab) ->

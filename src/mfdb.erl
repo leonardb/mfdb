@@ -580,6 +580,39 @@ reap_expired_(Table) ->
     end.
 
 %% @private
+reap_expired_(#st{db = Db, pfx = TabPfx0} = St, undefined, RangeStart, RangeEnd, Now) ->
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
+              LastKey = lists:foldl(
+                          fun({EncKey, <<>>}, LastKey) ->
+                                  %% Delete the actual expired record
+                                  <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+                                  <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
+                                  case sext:decode(EncValue) of
+                                      {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < Now ->
+                                          try
+                                              ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
+                                              %% Key2Ttl have to be removed individually
+                                              TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
+                                              ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
+                                              EncKey
+                                          catch
+                                              _E:_M:_Stack ->
+                                                  LastKey
+                                          end;
+                                      _ ->
+                                          LastKey
+                                  end
+                          end, ok, KVs),
+              case LastKey of
+                  ok ->
+                      ok;
+                  LastKey ->
+                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
+              end
+      end);
 reap_expired_(#st{db = Db, pfx = TabPfx0} = St, TtlModFun, RangeStart, RangeEnd, Now) ->
     CbRecs =
         erlfdb:transactional(

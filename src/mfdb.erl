@@ -476,7 +476,7 @@ handle_info(poll, #{table := Table, poller := Poller} = State) ->
     %% Non-blocking reaping of expired records from table
     case maps:get(reaper, State, undefined) of
         undefined ->
-            PidRef = spawn_monitor(fun() -> reap_expired_(Table) end),
+            PidRef = init_reaper(Table),
             {noreply, State#{poller => poll_timer(Poller), reaper => PidRef}};
         _ ->
             {noreply, State#{poller => poll_timer(Poller)}}
@@ -503,13 +503,20 @@ handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, ImportError}}}, #{
             gen_server:reply(From, ImportError),
             {noreply, State#{waiters => NWaiters}}
     end;
-handle_info({'DOWN', Ref, process, _Pid0, _Reason}, #{poller := Poller} = State) ->
+handle_info({'DOWN', Ref, process, _Pid0, Reason}, #{table := Table, poller := Poller} = State) ->
     case maps:get(reaper, State, undefined) of
         undefined ->
             {noreply, State#{poller => poll_timer(Poller)}};
         {_Pid1, Ref} ->
             erlang:demonitor(Ref),
-            {noreply, State#{poller => poll_timer(Poller), reaper => undefined}};
+            case Reason of
+                {normal, X} when X > 0 ->
+                    %% Tight loop while there may still be expired records
+                    NPidRef = init_reaper(Table),
+                    {noreply, State#{poller => poll_timer(Poller), reaper => NPidRef}};
+                _ ->
+                    {noreply, State#{poller => poll_timer(Poller), reaper => undefined}}
+            end;
         _PidRef ->
             %% Unmatched ref???
             {noreply, State#{poller => poll_timer(Poller)}}
@@ -524,6 +531,10 @@ terminate(_, _) ->
 %% @private
 code_change(_, State, _) ->
     {ok, State}.
+
+%% @private
+init_reaper(Table) ->
+    spawn_monitor(fun() -> Cnt = reap_expired_(Table), exit({normal, Cnt}) end).
 
 %% @private
 poll_timer(undefined) ->
@@ -560,7 +571,7 @@ reap_expired_(Table) ->
     case Ttl of
         undefined ->
             %% No expiration
-            ok;
+            0;
         _ ->
             Now = erlang:universaltime(),
             RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
@@ -611,10 +622,11 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, undefined, RangeStart, RangeEnd,
                       ok;
                   LastKey ->
                       mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
-              end
+              end,
+              length(KVs)
       end);
 reap_expired_(#st{db = Db, pfx = TabPfx0} = St, TtlModFun, RangeStart, RangeEnd, Now) ->
-    CbRecs =
+    {CbRecs, Cnt} =
         erlfdb:transactional(
           Db,
           fun(Tx) ->
@@ -660,7 +672,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, TtlModFun, RangeStart, RangeEnd,
                                               IAcc
                                       end
                               end, [], KVs),
-                  ICbRecs
+                  {ICbRecs, length(KVs)}
           end),
     case {CbRecs, TtlModFun} of
         {[], _} ->
@@ -670,7 +682,8 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, TtlModFun, RangeStart, RangeEnd,
             ok;
         _ ->
             ok
-    end.
+    end,
+    Cnt.
 
 reaper_test_callback(Record) ->
     io:format("REAPER TEST: ~p~n", [Record]),

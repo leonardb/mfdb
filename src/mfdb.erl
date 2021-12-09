@@ -556,7 +556,7 @@ key_unsubscribe_(From, Prefix, Key) ->
 
 %% @private
 reap_expired_(Table) ->
-    #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
+    #st{pfx = TabPfx, ttl = Ttl, ttl_callback = TtlCb} = St = mfdb_manager:st(Table),
     case Ttl of
         undefined ->
             %% No expiration
@@ -565,87 +565,79 @@ reap_expired_(Table) ->
             Now = erlang:universaltime(),
             RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
             RangeEnd = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END})),
-            reap_expired_(St, RangeStart, RangeEnd, Now)
+            TtlModFun = case Ttl of
+                            {field, _FieldIdx} ->
+                                case TtlCb of
+                                    {_,_} ->
+                                        TtlCb;
+                                    _ ->
+                                        undefined
+                                end;
+                            _ ->
+                                undefined
+                        end,
+            reap_expired_(St, TtlModFun, RangeStart, RangeEnd, Now)
     end.
 
 %% @private
-reap_expired_(#st{db = Db, tab = Tab0, pfx = TabPfx0, ttl = {field, _FieldIdx}, ttl_callback = {Mod, Fun}}, RangeStart, RangeEnd, Now) ->
-    %% Expiration with callbacks *only* supported for field-based TTLs,
-    %% *NOT* Table based TTLs
-    Tab = binary_to_existing_atom(Tab0),
-    erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
-              LastKey =
-                  lists:foldl(
-                    fun({EncKey, <<>>}, LKey0) ->
-                            %% Delete the actual expired record
-                            <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
-                            <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
-                            case sext:decode(EncValue) of
-                                {?TTL_TO_KEY_PFX, {{_, _, _}, {_, _, _}} = Expires, RecKey} when Expires < Now ->
-                                    %% get the record
-                                    {ok, Record} = lookup(Tab, RecKey),
-                                    %% Key2Ttl have to be removed individually.
-                                    %% This must be done before handing to callback
-                                    %% since callback may save record with a new TTL
-                                    TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                                    ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
-                                    %% Pass to the callback
-                                    try Mod:Fun(Record) of
-                                        ok ->
-                                            EncKey
-                                    catch
-                                        _E:_M:_Stack ->
-                                            io:format("PROBLEM!!: ~p~n", [{_E,_M,_Stack}]),
-                                            LKey0
-                                    end;
-                                _ ->
-                                    LKey0
-                            end
-                    end, ok, KVs),
-              case LastKey of
-                  ok ->
-                      ok;
-                  LastKey ->
-                      %% Finally clear the TTL2Rec entries for the covered range
-                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
-              end
-      end);
-reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
-    erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
-              LastKey = lists:foldl(
-                          fun({EncKey, <<>>}, LastKey) ->
-                                  %% Delete the actual expired record
-                                  <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
-                                  <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
-                                  case sext:decode(EncValue) of
-                                      {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < Now ->
-                                          try
-                                              ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
-                                              %% Key2Ttl have to be removed individually
-                                              TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                                              ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
-                                              EncKey
-                                          catch
-                                              _E:_M:_Stack ->
-                                                  LastKey
-                                          end;
-                                      _ ->
-                                          LastKey
-                                  end
-                          end, ok, KVs),
-              case LastKey of
-                  ok ->
-                      ok;
-                  LastKey ->
-                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
-              end
-      end).
+reap_expired_(#st{db = Db, pfx = TabPfx0} = St, TtlModFun, RangeStart, RangeEnd, Now) ->
+    CbRecs =
+        erlfdb:transactional(
+          Db,
+          fun(Tx) ->
+                  KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
+                  ICbRecs = lists:foldl(
+                              fun({EncKey, <<>>}, IAcc) ->
+                                      %% Delete the actual expired record
+                                      <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+                                      <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
+                                      case sext:decode(EncValue) of
+                                          {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < Now ->
+                                              try
+                                                  Rec = case TtlModFun of
+                                                            undefined ->
+                                                                null;
+                                                            TtlModFun ->
+                                                                %% get the record
+                                                                RecEncKey = mfdb_lib:encode_key(TabPfx0, {?DATA_PREFIX, RecKey}),
+                                                                case mfdb_lib:wait(erlfdb:get(Tx, RecEncKey)) of
+                                                                    not_found ->
+                                                                        null;
+                                                                    EncRecVal ->
+                                                                        mfdb_lib:decode_val(Tx, TabPfx0, EncRecVal)
+                                                                end
+                                                        end,
+                                                  _ = mfdb_lib:delete(St#st{db = Tx}, RecKey),
+                                                  %% Key2Ttl have to be removed individually
+                                                  TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
+                                                  ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
+                                                  ok = mfdb_lib:wait(erlfdb:clear(Tx, EncKey)),
+                                                  case {Rec, TtlModFun} of
+                                                      {null, _} ->
+                                                          IAcc;
+                                                      {Rec, {_Mod, _Fun}} ->
+                                                          [Rec | IAcc]
+                                                  end
+                                              catch
+                                                  _E:_M:_Stack ->
+                                                      io:format("CRASH: ~p~n", [{_E, _M, _Stack}]),
+                                                      IAcc
+                                              end;
+                                          _ ->
+                                              IAcc
+                                      end
+                              end, [], KVs),
+                  ICbRecs
+          end),
+    case {CbRecs, TtlModFun} of
+        {[], _} ->
+            ok;
+        {CbRecs, {Mod, Fun}} ->
+            lists:foreach(fun Mod:Fun/1, CbRecs),
+            ok;
+        _ ->
+            ok
+    end.
 
 reaper_test_callback(Record) ->
     io:format("REAPER TEST: ~p~n", [Record]),

@@ -61,6 +61,7 @@
 -define(FIELD_TYPES, [binary, integer, float, list, tuple, date, datetime, time, inet, inet4, inet6, atom, any, term, undefined, null]).
 
 -define(TABPROC(Table), {via, gproc, {n, l, {mfdb, Table}}}).
+-define(REAPERPROC(Table), {via, gproc, {n, l, {mfdb_reaper, Table}}}).
 
 -type field_ttl()   :: {field, pos_integer()}.
 -type ttl_period()  :: {minutes | hours | days | unix, pos_integer()}.

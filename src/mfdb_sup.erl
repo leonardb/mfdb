@@ -43,7 +43,7 @@ init([]) ->
                    undefined ->
                        [];
                    _ ->
-                       [?CHILD(mfdb_table_sup, supervisor),
+                       [?CHILD(mfdb_tables_sup, supervisor),
                         ?CHILD(mfdb_watcher_sup, supervisor),
                         ?CHILD(mfdb_manager, worker)]
                end,

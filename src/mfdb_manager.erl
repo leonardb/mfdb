@@ -76,7 +76,7 @@ handle_call({connect, Tab}, _From, S) ->
     R = load_table_(atom_to_binary(Tab)),
     {reply, R, S};
 handle_call({delete_table, Tab0}, _From, S) ->
-    R = delete_table_(atom_to_binary(Tab0)),
+    R = delete_table_(Tab0),
     {reply, R, S};
 handle_call({create_table, Table, Options}, _From, S) ->
     R = case lists:keyfind(record, 1, Options) of
@@ -217,12 +217,14 @@ ttl_callback_(Options) ->
     end.
 
 delete_table_(Tab) ->
-    case persistent_term:get({mfdb, Tab}, undefined) of
+    TabBin = atom_to_binary(Tab),
+    case persistent_term:get({mfdb, TabBin}, undefined) of
         #st{db = Db, key_id = KeyId, index = Indexes, pfx = TblPfx} ->
             ok = mfdb_lib:clear_table(Db, TblPfx, Indexes),
-            TabKey = sext:encode({KeyId, <<"table">>, Tab}),
+            TabKey = sext:encode({KeyId, <<"table">>, TabBin}),
             ok = erlfdb:clear(Db, TabKey),
-            persistent_term:erase({mfdb, Tab}),
+            persistent_term:erase({mfdb, TabBin}),
+            mfdb_tables_sup:remove(Tab),
             ok;
         undefined ->
             {error, no_such_table}
@@ -241,7 +243,7 @@ load_table_(Tab) ->
                 EncSt ->
                     #st{} = TableSt = binary_to_term(EncSt),
                     ok = persistent_term:put({mfdb, Tab}, TableSt#st{db = Db}),
-                    ok = mfdb_table_sup:add(binary_to_atom(Tab))
+                    ok = mfdb_tables_sup:add(binary_to_atom(Tab))
             end;
         #st{} ->
             %% table already loaded
@@ -281,7 +283,7 @@ table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl, TtlCallback)
                       binary_to_term(StBin)
               end,
     ok = persistent_term:put({mfdb, Table}, TableSt#st{db = Db}),
-    ok = mfdb_table_sup:add(binary_to_atom(Table)).
+    ok = mfdb_tables_sup:add(binary_to_atom(Table)).
 
 mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl, TtlCallback) ->
     HcaRef = erlfdb_hca:create(<<TableId/binary, "_hca_ref">>),

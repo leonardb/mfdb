@@ -101,12 +101,12 @@ sort(L) ->
 %% @doc
 %% Inserts or replaces a record
 %% @end
-write(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
-    erlfdb:transactional(Db, write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record));
-write(#st{db = ?IS_TX = Tx, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl}, PkValue, Record) ->
-    erlfdb:transactional(Tx, write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record)).
+write(#st{db = ?IS_DB = Db, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl, ttl_callback = TtlCb}, PkValue, Record) ->
+    erlfdb:transactional(Db, write_fun_(TabPfx, HcaRef, Indexes, Ttl, TtlCb, PkValue, Record));
+write(#st{db = ?IS_TX = Tx, pfx = TabPfx, hca_ref = HcaRef, index = Indexes, ttl = Ttl, ttl_callback = TtlCb}, PkValue, Record) ->
+    erlfdb:transactional(Tx, write_fun_(TabPfx, HcaRef, Indexes, Ttl, TtlCb, PkValue, Record)).
 
-write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
+write_fun_(TabPfx, HcaRef, Indexes, Ttl, TtlCb, PkValue, Record) ->
     TtlValue = ttl_val_(Ttl, Record),
     fun(Tx) ->
             EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
@@ -154,11 +154,11 @@ write_fun_(TabPfx, HcaRef, Indexes, Ttl, PkValue, Record) ->
                     %% Update the count of stored records
                     ok = wait(inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, CountInc)),
                     %% Create/update any TTLs
-                    ok = wait(ttl_add(Tx, TabPfx, TtlValue, PkValue));
+                    ok = wait(ttl_add(Tx, TabPfx, TtlValue, TtlCb, PkValue));
                 false ->
                     wait(write_(Tx, TabPfx, HcaRef, Size, EncKey, Size, EncRecord)),
                     %% Update any TTLs
-                    ok = wait(ttl_add(Tx, TabPfx, TtlValue, PkValue))
+                    ok = wait(ttl_add(Tx, TabPfx, TtlValue, TtlCb, PkValue))
             end
     end.
 
@@ -215,23 +215,37 @@ ttl_val_(Ttl, Record) ->
             never
     end.
 
-ttl_add(?IS_DB = Db, TabPfx, {{_,_,_}, {_,_,_}} = TtlDatetime, Key) ->
+ttl_add(?IS_DB = Db, TabPfx, {{_,_,_}, {_,_,_}} = TtlDatetime, TtlCb, Key) ->
     Tx = erlfdb:create_transaction(Db),
-    ok = ttl_add(Tx, TabPfx, TtlDatetime, Key),
+    ok = ttl_add(Tx, TabPfx, TtlDatetime, TtlCb, Key),
     wait(erlfdb:commit(Tx));
-ttl_add(?IS_TX = Tx, TabPfx, {{_,_,_}, {_,_,_}} = TtlDatetime0, Key) ->
+ttl_add(?IS_TX = Tx, TabPfx, {{_,_,_}, {_,_,_}} = TtlDatetime0, TtlCb, Key) ->
     %% We need to be able to lookup in both directions
     %% since we use a range query for reaping expired records
     %% and we also need to remove the previous entry if a record gets updated
     ok = ttl_remove(Tx, TabPfx, TtlDatetime0, Key),
-    TTLDatetime = ttl_minute(TtlDatetime0), %% aligned to current minute + 1 minute
+    Now = erlang:universaltime(),
+    TTLDatetime = case TtlCb of
+                      {_Mod, _Fun} when Now < TtlDatetime0 ->
+                          %% Expiration *must* be in the future else
+                          %% we risk the ttl entry being removed by the
+                          %% expiration poller before record can be handled
+                          TtlDatetime0;
+                      _ ->
+                          %% aligned to current minute + 1 minute
+                          ttl_minute(TtlDatetime0)
+                  end,
     wait(erlfdb:set(Tx, encode_key(TabPfx, {?TTL_TO_KEY_PFX, TTLDatetime, Key}), <<>>)),
     wait(erlfdb:set(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}), sext:encode(TTLDatetime)));
-ttl_add(_Tx, _TabPfx, _, _Key) ->
+ttl_add(_Tx, _TabPfx, _, _TtlCb, _Key) ->
     %% Not a date-time, do not add ttl
     ok.
 
 ttl_remove(_Tx, _TabPfx, undefined, _Key) ->
+    ok;
+ttl_remove(_Tx, _TabPfx, null, _Key) ->
+    ok;
+ttl_remove(_Tx, _TabPfx, never, _Key) ->
     ok;
 ttl_remove(?IS_TX = Tx, TabPfx, _TtlDatetime, Key) ->
     TtlK2T = encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}),

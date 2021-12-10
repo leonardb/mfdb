@@ -205,10 +205,10 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, TtlModFun, RangeStart, RangeEnd,
                                                             undefined ->
                                                                 null;
                                                             TtlModFun ->
-                                                                ok = mfdb_lib:wait(erlfdb:add_read_conflict_key(Tx, RecEncKey)),
-                                                                ok = mfdb_lib:wait(erlfdb:add_write_conflict_key(Tx, RecEncKey)),
                                                                 %% get the record
                                                                 RecEncKey = mfdb_lib:encode_key(TabPfx0, {?DATA_PREFIX, RecKey}),
+                                                                ok = mfdb_lib:wait(erlfdb:add_read_conflict_key(Tx, RecEncKey)),
+                                                                ok = mfdb_lib:wait(erlfdb:add_write_conflict_key(Tx, RecEncKey)),
                                                                 case mfdb_lib:wait(erlfdb:get(Tx, RecEncKey)) of
                                                                     not_found ->
                                                                         null;

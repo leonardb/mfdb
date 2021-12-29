@@ -104,31 +104,8 @@ handle_call(table_list, _From, S) ->
             TablesPfx = sext:prefix({KeyId, <<"table">>, ?FDB_WC}),
             Tables0 = erlfdb:get_range_startswith(Db, TablesPfx),
             Tables = [begin
-                          case binary_to_term(TabEnc) of
-                              #st{tab = Table} ->
-                                  binary_to_atom(Table);
-                              {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
-                                  Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
-                                  NTabSt = #st{tab = Tab,
-                                               key_id = KeyId0,
-                                               alias = Alias,
-                                               record_name = RecordName,
-                                               fields = Fields,
-                                               index = Index,
-                                               db = Db0,
-                                               table_id = TableId,
-                                               pfx = Pfx,
-                                               hca_ref = HcaRef,
-                                               info = Info,
-                                               ttl = Ttl,
-                                               write_lock = WriteLock},
-                                  erlfdb:transactional(
-                                    Db,
-                                    fun(Tx) ->
-                                            erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
-                                    end),
-                                  binary_to_atom(Tab)
-                          end
+                          #st{tab = Table} = convert_table_rec(Db, TabKey, TabEnc),
+                          binary_to_atom(Table)
                       end || {TabKey, TabEnc} <- Tables0],
             {reply, {ok, Tables}, S}
     end;
@@ -231,7 +208,7 @@ load_table_(Tab) ->
                 not_found ->
                     {error, no_such_table};
                 EncSt ->
-                    #st{} = TableSt = binary_to_term(EncSt),
+                    #st{} = TableSt = convert_table_rec(Db, TabKey, EncSt),
                     ok = persistent_term:put({mfdb, Tab}, TableSt#st{db = Db}),
                     ok = mfdb_tables_sup:add(binary_to_atom(Tab))
             end;
@@ -306,3 +283,32 @@ create_indexes_([Pos | Rest], #st{db = Db, index = Index0} = St) ->
                  data_key = <<?IDX_DATA_PREFIX/binary, HcaId/binary>>,
                  count_key = <<?IDX_COUNT_PREFIX/binary, HcaId/binary>>},
     create_indexes_(Rest, St#st{index = setelement(Pos, Index0, Index)}).
+
+convert_table_rec(Db, TabKey, TabEnc) ->
+    case binary_to_term(TabEnc) of
+        #st{} = St ->
+            St;
+        {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
+         Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
+            NTabSt = #st{tab = Tab,
+                         key_id = KeyId0,
+                         alias = Alias,
+                         record_name = RecordName,
+                         fields = Fields,
+                         index = Index,
+                         db = Db0,
+                         table_id = TableId,
+                         pfx = Pfx,
+                         hca_ref = HcaRef,
+                         info = Info,
+                         ttl = Ttl,
+                         write_lock = WriteLock},
+            erlfdb:transactional(
+              Db,
+              fun(Tx) ->
+                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+              end),
+            NTabSt;
+        Other ->
+            Other
+    end.

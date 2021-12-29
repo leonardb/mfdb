@@ -84,8 +84,7 @@ handle_call({create_table, Table, Options}, _From, S) ->
                 {ok, Indexes} = indexes_(Options),
                 case ttl_(Options, Record) of
                     {ok, Ttl} ->
-                        TtlCallback = ttl_callback_(Options),
-                        create_table_(atom_to_binary(Table), Record, Indexes, Ttl, TtlCallback);
+                        create_table_(atom_to_binary(Table), Record, Indexes, Ttl);
                     TtlErr ->
                         TtlErr
                 end;
@@ -109,7 +108,7 @@ handle_call(table_list, _From, S) ->
                               #st{tab = Table} ->
                                   binary_to_atom(Table);
                               {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
-                                  Db0, TableId, Pfx, HcaRef, Info, Ttl, WriteLock} ->
+                                  Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
                                   NTabSt = #st{tab = Tab,
                                                key_id = KeyId0,
                                                alias = Alias,
@@ -207,15 +206,6 @@ ttl_(Options, {_, Fields}) ->
             {error, invalid_ttl}
     end.
 
-ttl_callback_(Options) ->
-    case proplists:get_value(ttl_callback, Options, undefined) of
-        undefined ->
-            undefined;
-        {Mod, Fun} ->
-            %% We cannot check if function is exported in app using mfdb as dep
-            {Mod, Fun}
-    end.
-
 delete_table_(Tab) ->
     TabBin = atom_to_binary(Tab),
     case persistent_term:get({mfdb, TabBin}, undefined) of
@@ -250,14 +240,14 @@ load_table_(Tab) ->
             ok
     end.
 
-create_table_(Tab, Record0, Indexes, Ttl, TtlCallback) when is_binary(Tab) ->
+create_table_(Tab, Record0, Indexes, Ttl) when is_binary(Tab) ->
     #conn{key_id = KeyId} = Conn = persistent_term:get(mfdb_conn),
     Db = mfdb_conn:connection(Conn),
     %% Functions must return 'ok' to continue, anything else will exit early
     Record = record_(Record0),
     Flow = [{fun mfdb_lib:validate_record/1, [Record]},
             {fun mfdb_lib:validate_indexes/2, [Indexes, Record]},
-            {fun table_create_if_not_exists_/7, [Db, KeyId, Tab, Record, Indexes, Ttl, TtlCallback]}],
+            {fun table_create_if_not_exists_/6, [Db, KeyId, Tab, Record, Indexes, Ttl]}],
     mfdb_lib:flow(Flow, ok).
 
 %% Set any unspecified fields as 'any' type
@@ -268,13 +258,13 @@ table_exists_(Db, TabKey) ->
     %% Does a table config exist
     erlfdb:get(Db, TabKey) =/= not_found.
 
-table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl, TtlCallback) ->
+table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl) ->
     TabKey = sext:encode({KeyId, <<"table">>, Table}),
     TableSt = case table_exists_(Db, TabKey) of
                   false ->
                       Hca = erlfdb_hca:create(<<"hca_table">>),
                       TableId = erlfdb_hca:allocate(Hca, Db),
-                      #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes, Ttl, TtlCallback),
+                      #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes, Ttl),
                       ok = erlfdb:set(Db, TabKey, term_to_binary(TableSt0)),
                       TableSt0;
                   true ->
@@ -285,7 +275,7 @@ table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl, TtlCallback)
     ok = persistent_term:put({mfdb, Table}, TableSt#st{db = Db}),
     ok = mfdb_tables_sup:add(binary_to_atom(Table)).
 
-mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl, TtlCallback) ->
+mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl) ->
     HcaRef = erlfdb_hca:create(<<TableId/binary, "_hca_ref">>),
     Pfx = <<(byte_size(KeyId) + byte_size(TableId) + 2),
             (byte_size(KeyId)), KeyId/binary,
@@ -301,8 +291,7 @@ mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl, TtlCallba
              hca_ref     = HcaRef,
              pfx         = Pfx,
              info        = [],
-             ttl         = Ttl,
-             ttl_callback = TtlCallback
+             ttl         = Ttl
             },
     %% Convert indexes to records and add to the table state
     create_indexes_(Indexes, St0).

@@ -29,8 +29,6 @@
          terminate/2,
          code_change/3]).
 
--export([test_callback/1]).
-
 -include("mfdb.hrl").
 -define(REAP_POLL_INTERVAL, 500).
 -define(REAP_SEGMENT_SIZE, 200).
@@ -52,7 +50,7 @@ init([Table]) ->
                  _ ->
                      poll_timer(undefined)
              end,
-    {ok, #{table => Table}, ?REAP_POLL_INTERVAL}.
+    {ok, #{table => Table, poller => Poller}}.
 
 handle_call(stop, _From, State) ->
     case maps:get(reaper, State, undefined) of
@@ -71,7 +69,7 @@ handle_cast(_, State) ->
     {noreply, State}.
 
 %% @private
-handle_info(Msg, #{table := Table} = State) when Msg =:= poll orelse Msg =:= timeout ->
+handle_info(timeout, #{table := Table} = State) ->
     %% Non-blocking reaping of expired records from table
     try reap_expired_(Table) of
         0 ->
@@ -82,6 +80,18 @@ handle_info(Msg, #{table := Table} = State) when Msg =:= poll orelse Msg =:= tim
         E:M:St ->
             error_logger:error_msg("poller crash: ~p ~p ~p", [E,M,St]),
             {noreply, State, 2000}
+    end;
+handle_info(poll, #{table := Table, poller := Poller} = State) ->
+    %% Non-blocking reaping of expired records from table
+    try reap_expired_(Table) of
+        0 ->
+            {noreply, State#{poll_timer(Poller)}};
+        _Cnt ->
+            {noreply, State#{poll_timer(Poller)}}
+    catch
+        E:M:St ->
+            error_logger:error_msg("poller crash: ~p ~p ~p", [E,M,St]),
+            {noreply, State#{poll_timer(Poller)}}
     end;
 handle_info(_UNKNOWN, State) ->
     {noreply, State}.
@@ -109,7 +119,7 @@ poll_timer(TRef, T) when is_reference(TRef) ->
 
 %% @private
 reap_expired_(Table) ->
-    #st{pfx = TabPfx, ttl = Ttl, ttl_callback = TtlCb} = St = mfdb_manager:st(Table),
+    #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
     case Ttl of
         undefined ->
             %% No expiration
@@ -118,22 +128,11 @@ reap_expired_(Table) ->
             Now = erlang:universaltime(),
             RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
             RangeEnd = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END})),
-            TtlModFun = case Ttl of
-                            {field, _FieldIdx} ->
-                                case TtlCb of
-                                    {_,_} ->
-                                        TtlCb;
-                                    _ ->
-                                        undefined
-                                end;
-                            _ ->
-                                undefined
-                        end,
-            reap_expired_(Table, St, TtlModFun, RangeStart, RangeEnd, Now)
+            reap_expired_(Table, St, RangeStart, RangeEnd, Now)
     end.
 
 %% @private
-reap_expired_(_Table, #st{db = Db, pfx = TabPfx0} = St, undefined, RangeStart, RangeEnd, Now) ->
+reap_expired_(_Table, #st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
@@ -166,100 +165,7 @@ reap_expired_(_Table, #st{db = Db, pfx = TabPfx0} = St, undefined, RangeStart, R
                       mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
               end,
               length(KVs)
-      end);
-reap_expired_(Table, #st{db = Db, pfx = TabPfx0}, {Mod, Fun}, RangeStart, RangeEnd, Now) ->
-    {CbRecs, _Cnt} =
-        erlfdb:transactional(
-          Db,
-          fun(Tx) ->
-                  KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, ?REAP_SEGMENT_SIZE}])),
-                  ICbRecs = handle_range_res(Tx, TabPfx0, Now, KVs, []),
-                  {ICbRecs, length(KVs)}
-          end),
-    case CbRecs of
-        [] ->
-            0;
-        CbRecs ->
-            PidRefs = split_and_spawn_callbacks(Table, Mod, Fun, CbRecs),
-            ok = monitor_callbacks(PidRefs),
-            length(CbRecs)
-    end.
-
-handle_range_res(_Tx, _TabPfx0, _Now, [], Acc) ->
-    Acc;
-handle_range_res(Tx, TabPfx0, Now, [{EncKey, <<>>} | Rest], IAcc) ->
-    %% Delete the actual expired record
-    <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
-    <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
-    NewAcc =
-        case sext:decode(EncValue) of
-            {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < Now ->
-                try
-                    %% get the record
-                    RecEncKey = mfdb_lib:encode_key(TabPfx0, {?DATA_PREFIX, RecKey}),
-                    Rec = case mfdb_lib:wait(erlfdb:get(Tx, RecEncKey)) of
-                              not_found ->
-                                  null;
-                              EncRecVal ->
-                                  mfdb_lib:decode_val(Tx, TabPfx0, EncRecVal)
-                          end,
-                    ok = mfdb_lib:wait(erlfdb:clear(Tx, RecEncKey)),
-                    %% Key2Ttl have to be removed individually
-                    TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                    ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
-                    ok = mfdb_lib:wait(erlfdb:clear(Tx, EncKey)),
-                    case Rec of
-                        null ->
-                            IAcc;
-                        Rec ->
-                            [Rec | IAcc]
-                    end
-                catch
-                    _E:_M:_Stack ->
-                        io:format("CRASH: ~p~n", [{_E, _M, _Stack}]),
-                        IAcc
-                end;
-            _ ->
-                IAcc
-        end,
-    handle_range_res(Tx, TabPfx0, Now, Rest, NewAcc).
-
-split_and_spawn_callbacks(Table, Mod, Fun, CBRecs) ->
-    split_and_spawn_callbacks(Table, Mod, Fun, CBRecs, 0, [], []).
-
-split_and_spawn_callbacks(Table, Mod, Fun, [], _Cnt, Acc, PidRefs) ->
-    PidRef = spawn_monitor(fun() -> [try_callback(Table, Mod, Fun, R) || R <- Acc] end),
-    lists:reverse([PidRef | PidRefs]);
-split_and_spawn_callbacks(Table, Mod, Fun, [Rec | Rest], Cnt, Acc, PidRefs) when Cnt < ?REAP_CALLBACK_PER_PROCESS ->
-    split_and_spawn_callbacks(Table, Mod, Fun, Rest, Cnt + 1, [Rec | Acc], PidRefs);
-split_and_spawn_callbacks(Table, Mod, Fun, [Rec | Rest], _Cnt, Acc, PidRefs) ->
-    PidRef = spawn_monitor(fun() -> [try_callback(Table, Mod, Fun, R) || R <- Acc] end),
-    split_and_spawn_callbacks(Table, Mod, Fun, Rest, 0, [Rec], [PidRef | PidRefs]).
-
-try_callback(Table, Mod, Fun, Rec) ->
-    try Mod:Fun(Rec) of
-        ok ->
-            ok
-    catch
-        E:M:St ->
-            error_logger:error_msg("Expired callback ~p:~p(~p) failed: ~p ~p ~p",
-                                   [Mod, Fun, Rec, E, M, St]),
-            mfdb:insert(Table, Rec),
-            ok
-    end.
-
-monitor_callbacks([]) ->
-    ok;
-monitor_callbacks(PidRefs) ->
-    receive
-        {'DOWN', Ref, process, _Pid, normal} ->
-            monitor_callbacks(lists:keydelete(Ref, 2, PidRefs))
-    end.
-
-test_callback(Record) ->
-    file:write_file("/tmp/" ++ atom_to_list(node()) ++ ".log", io_lib:format("~p~n",[element(2,Record)]), [append]),
-    io:format("REAPER TEST: ~p~n", [Record]),
-    ok.
+      end).
 
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

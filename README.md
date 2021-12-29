@@ -46,7 +46,6 @@ EG: `{record, {test, [{id, integer}, {value, [undefined | binary]}, {expires, da
     -type ttl_period()  :: {minutes | hours | days | unix, pos_integer()}.
     -type table_ttl()   :: {table, ttl_period()}.
     -type ttl()         :: field_ttl() | table_ttl().
-    -type ttl_callback() :: {Module :: atom(), Function :: atom()}.
   ```
     - ####table_ttl :: {table_ttl, table_ttl()}
     *or*
@@ -58,13 +57,6 @@ EG: `{record, {test, [{id, integer}, {value, [undefined | binary]}, {expires, da
         When TTL is configured for a table older records will be reaped automatically.
   
         Any insert operation will reset the TTL for a record.
-
-    ####ttl_callback
-  - This can only be used in conjunction with `field_ttl`
-  - Passed in as table option `{ttl_callback, {Module :: atom(), Function :: atom()}}`
-  - The callback function must be an exported 1-arity function. it _must_ return an 'ok' atom. Any other return will result in the table reaper crashing and the resuming from the same point. `-spec ttl_callback_function(Record :: any()) -> ok.`
-  - When the record expiration time is hit, the Mod:Fun/1 is called with the record
-  - the record *IS DELETED* before being sent to callback function
 
 # Counters
 

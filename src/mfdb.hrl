@@ -125,7 +125,6 @@
          hca_ref,   %% opaque :: #erlfdb_hca{} record used for mfdb_part() keys    :: erlfdb_hca:create(<<"parts_", TableId/binary>>).
          info           = [],
          ttl            = undefined     :: undefined | ttl(),
-         ttl_callback   = undefined     :: undefined | ttl_callback(),
          write_lock     = false         :: boolean()
         }).
 

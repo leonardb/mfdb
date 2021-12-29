@@ -386,7 +386,7 @@ handle_call({import, SourceFile}, From, #{table := Table} = State) ->
     NewWaiters = [{ImportId, Pid, Ref, From} | OldWaiters],
     {noreply, State#{waiters => NewWaiters}};
 handle_call({table_info, all}, _From, #{table := Table} = State) ->
-    #st{fields = Fields, index = Index, ttl = Ttl0, ttl_callback = TtlCb} = St = mfdb_manager:st(Table),
+    #st{fields = Fields, index = Index, ttl = Ttl0} = St = mfdb_manager:st(Table),
     Count = mfdb_lib:table_count(St),
     Size = mfdb_lib:table_data_size(St),
     Indexes = [P || #idx{pos = P} <- tuple_to_list(Index)],
@@ -394,19 +394,13 @@ handle_call({table_info, all}, _From, #{table := Table} = State) ->
             {size, Size},
             {fields, Fields},
             {indexes, Indexes}],
-    All1 = case TtlCb of
-               undefined ->
-                   All0;
-               TtlCb ->
-                   [{ttl_callback, TtlCb} | All0]
-           end,
     All = case Ttl0 of
               {field, Pos} ->
-                  [{field_ttl, Pos} | All1];
+                  [{field_ttl, Pos} | All0];
               {table, T} ->
-                  [{table_ttl, T} | All1];
+                  [{table_ttl, T} | All0];
               undefined ->
-                  All1
+                  All0
           end,
     {reply, {ok, All}, State};
 handle_call({table_info, count}, _From, #{table := Table} = State) ->
@@ -435,9 +429,6 @@ handle_call({table_info, ttl}, _From, #{table := Table} = State) ->
                   no_ttl
           end,
     {reply, {ok, Ttl}, State};
-handle_call({table_info, ttl_callback}, _From, #{table := Table} = State) ->
-    #st{ttl_callback = TtlCb} = mfdb_manager:st(Table),
-    {reply, {ok, TtlCb}, State};
 handle_call({subscribe, ReplyType, Key}, From, #{table := Table} = State) ->
     #st{pfx = TblPfx, tab = Tab} = mfdb_manager:st(Table),
     Reply = key_subscribe_(Tab, ReplyType, From, TblPfx, Key),

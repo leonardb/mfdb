@@ -85,13 +85,13 @@ handle_info(poll, #{table := Table, poller := Poller} = State) ->
     %% Non-blocking reaping of expired records from table
     try reap_expired_(Table) of
         0 ->
-            {noreply, State#{poll_timer(Poller)}};
+            {noreply, State#{poller => poll_timer(Poller)}};
         _Cnt ->
-            {noreply, State#{poll_timer(Poller)}}
+            {noreply, State#{poller => poll_timer(Poller)}}
     catch
         E:M:St ->
             error_logger:error_msg("poller crash: ~p ~p ~p", [E,M,St]),
-            {noreply, State#{poll_timer(Poller)}}
+            {noreply, State#{poller => poll_timer(Poller)}}
     end;
 handle_info(_UNKNOWN, State) ->
     {noreply, State}.

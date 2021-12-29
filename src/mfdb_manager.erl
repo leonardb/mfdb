@@ -76,7 +76,7 @@ handle_call({connect, Tab}, _From, S) ->
     R = load_table_(atom_to_binary(Tab)),
     {reply, R, S};
 handle_call({delete_table, Tab0}, _From, S) ->
-    R = delete_table_(atom_to_binary(Tab0)),
+    R = delete_table_(Tab0),
     {reply, R, S};
 handle_call({create_table, Table, Options}, _From, S) ->
     R = case lists:keyfind(record, 1, Options) of
@@ -104,9 +104,9 @@ handle_call(table_list, _From, S) ->
             TablesPfx = sext:prefix({KeyId, <<"table">>, ?FDB_WC}),
             Tables0 = erlfdb:get_range_startswith(Db, TablesPfx),
             Tables = [begin
-                          #st{tab = Table} = binary_to_term(TabEnc),
+                          #st{tab = Table} = convert_table_rec(Db, TabKey, TabEnc),
                           binary_to_atom(Table)
-                      end || {_TabKey, TabEnc} <- Tables0],
+                      end || {TabKey, TabEnc} <- Tables0],
             {reply, {ok, Tables}, S}
     end;
 handle_call(_, _, S) ->
@@ -142,6 +142,13 @@ ttl_(Options, {_, Fields}) ->
                   TtlFieldPos =< MaxFieldIdx ->
                 %% Make sure field at position X is typed as a datetime
                 case lists:nth(TtlFieldPos - 1, Fields) of
+                    {_FName, Types} when is_list(Types) ->
+                        case lists:member(datetime, Types) of
+                            true ->
+                                TtlFieldPos;
+                            false ->
+                                invalid_ttl
+                        end;
                     {_FName, datetime} ->
                         TtlFieldPos;
                     _ ->
@@ -177,12 +184,14 @@ ttl_(Options, {_, Fields}) ->
     end.
 
 delete_table_(Tab) ->
-    case persistent_term:get({mfdb, Tab}, undefined) of
+    TabBin = atom_to_binary(Tab),
+    case persistent_term:get({mfdb, TabBin}, undefined) of
         #st{db = Db, key_id = KeyId, index = Indexes, pfx = TblPfx} ->
             ok = mfdb_lib:clear_table(Db, TblPfx, Indexes),
-            TabKey = sext:encode({KeyId, <<"table">>, Tab}),
+            TabKey = sext:encode({KeyId, <<"table">>, TabBin}),
             ok = erlfdb:clear(Db, TabKey),
-            persistent_term:erase({mfdb, Tab}),
+            persistent_term:erase({mfdb, TabBin}),
+            mfdb_tables_sup:remove(Tab),
             ok;
         undefined ->
             {error, no_such_table}
@@ -199,9 +208,9 @@ load_table_(Tab) ->
                 not_found ->
                     {error, no_such_table};
                 EncSt ->
-                    #st{} = TableSt = binary_to_term(EncSt),
+                    #st{} = TableSt = convert_table_rec(Db, TabKey, EncSt),
                     ok = persistent_term:put({mfdb, Tab}, TableSt#st{db = Db}),
-                    ok = mfdb_table_sup:add(binary_to_atom(Tab))
+                    ok = mfdb_tables_sup:add(binary_to_atom(Tab))
             end;
         #st{} ->
             %% table already loaded
@@ -241,7 +250,7 @@ table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl) ->
                       binary_to_term(StBin)
               end,
     ok = persistent_term:put({mfdb, Table}, TableSt#st{db = Db}),
-    ok = mfdb_table_sup:add(binary_to_atom(Table)).
+    ok = mfdb_tables_sup:add(binary_to_atom(Table)).
 
 mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl) ->
     HcaRef = erlfdb_hca:create(<<TableId/binary, "_hca_ref">>),
@@ -274,3 +283,32 @@ create_indexes_([Pos | Rest], #st{db = Db, index = Index0} = St) ->
                  data_key = <<?IDX_DATA_PREFIX/binary, HcaId/binary>>,
                  count_key = <<?IDX_COUNT_PREFIX/binary, HcaId/binary>>},
     create_indexes_(Rest, St#st{index = setelement(Pos, Index0, Index)}).
+
+convert_table_rec(Db, TabKey, TabEnc) ->
+    case binary_to_term(TabEnc) of
+        #st{} = St ->
+            St;
+        {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
+         Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
+            NTabSt = #st{tab = Tab,
+                         key_id = KeyId0,
+                         alias = Alias,
+                         record_name = RecordName,
+                         fields = Fields,
+                         index = Index,
+                         db = Db0,
+                         table_id = TableId,
+                         pfx = Pfx,
+                         hca_ref = HcaRef,
+                         info = Info,
+                         ttl = Ttl,
+                         write_lock = WriteLock},
+            erlfdb:transactional(
+              Db,
+              fun(Tx) ->
+                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+              end),
+            NTabSt;
+        Other ->
+            Other
+    end.

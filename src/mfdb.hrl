@@ -61,6 +61,7 @@
 -define(FIELD_TYPES, [binary, integer, float, list, tuple, date, datetime, time, inet, inet4, inet6, atom, any, term, undefined, null]).
 
 -define(TABPROC(Table), {via, gproc, {n, l, {mfdb, Table}}}).
+-define(REAPERPROC(Table), {via, gproc, {n, l, {mfdb_reaper, Table}}}).
 
 -type field_ttl()   :: {field, pos_integer()}.
 -type ttl_period()  :: {minutes | hours | days | unix, pos_integer()}.
@@ -68,6 +69,7 @@
 -type table_ttl()   :: {table, ttl_period()}.
 -type ttl()         :: field_ttl() | table_ttl().
 -type ttls()        :: list(ttl()).
+-type ttl_callback() :: {atom(), atom()}. %% {module, function}
 -type table_name()  :: atom().
 -type field_name()  :: atom().
 -type field_type()  :: binary | integer | float | list | tuple | date | datetime | time | inet | inet4 | inet6 | atom | any | term | undefined | null.
@@ -79,7 +81,11 @@
 -type continuation() :: function().
 -type field_changes() :: list({field(), any()}).
 
--type option() :: {record, mfdbrecord()} | {indexes, indexes()} | {table_ttl, ttl()} | {field_ttl, index()}.
+-type option() :: {record, mfdbrecord()} |
+                  {indexes, indexes()} |
+                  {table_ttl, ttl()} |
+                  {field_ttl, index()} |
+                  {ttl_callback, ttl_callback()}.
 -type options() :: list(option()).
 
 -type watcher_callback() :: {callback, atom(), atom()}.

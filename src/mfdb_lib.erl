@@ -215,22 +215,28 @@ ttl_val_(Ttl, Record) ->
             never
     end.
 
-ttl_add(_Tx, _TabPfx, never, _Key) ->
-    ok;
-ttl_add(?IS_DB = Db, TabPfx, TtlDatetime, Key) ->
+ttl_add(?IS_DB = Db, TabPfx, {{_,_,_}, {_,_,_}} = TtlDatetime, Key) ->
     Tx = erlfdb:create_transaction(Db),
     ok = ttl_add(Tx, TabPfx, TtlDatetime, Key),
     wait(erlfdb:commit(Tx));
-ttl_add(?IS_TX = Tx, TabPfx, TtlDatetime0, Key) ->
+ttl_add(?IS_TX = Tx, TabPfx, {{_,_,_}, {_,_,_}} = TtlDatetime0, Key) ->
     %% We need to be able to lookup in both directions
     %% since we use a range query for reaping expired records
     %% and we also need to remove the previous entry if a record gets updated
-    ok = ttl_remove(Tx, TabPfx, TtlDatetime0, Key),
-    TTLDatetime = ttl_minute(TtlDatetime0), %% aligned to current minute + 1 minute
+    TTLDatetime = ttl_minute(TtlDatetime0),
+    ok = ttl_remove(Tx, TabPfx, TTLDatetime, Key),
+    %% aligned to current minute + 1 minute
     wait(erlfdb:set(Tx, encode_key(TabPfx, {?TTL_TO_KEY_PFX, TTLDatetime, Key}), <<>>)),
-    wait(erlfdb:set(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}), sext:encode(TTLDatetime))).
+    wait(erlfdb:set(Tx, encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}), sext:encode(TTLDatetime)));
+ttl_add(_Tx, _TabPfx, _, _Key) ->
+    %% Not a date-time, do not add ttl
+    ok.
 
 ttl_remove(_Tx, _TabPfx, undefined, _Key) ->
+    ok;
+ttl_remove(_Tx, _TabPfx, null, _Key) ->
+    ok;
+ttl_remove(_Tx, _TabPfx, never, _Key) ->
     ok;
 ttl_remove(?IS_TX = Tx, TabPfx, _TtlDatetime, Key) ->
     TtlK2T = encode_key(TabPfx, {?KEY_TO_TTL_PFX, Key}),
@@ -593,8 +599,10 @@ check_field_types([Val | RestVal], [{Field, Type} | RestFields], TtlPos, FPos) -
     case type_check_(Val, Type) of
         true ->
             check_field_types(RestVal, RestFields, TtlPos, FPos + 1);
-        false ->
-            {error, {Field, Val, list_to_atom("not_a_" ++ atom_to_list(Type))}}
+        false when is_atom(Type) ->
+            {error, {Field, Val, list_to_atom("not_" ++ atom_to_list(Type))}};
+        false when is_list(Type) ->
+            {error, {Field, Val, list_to_atom("not_" ++ string:join([atom_to_list(T) || T <- Type], "|"))}}
     end.
 
 check_index_sizes([], []) ->

@@ -67,7 +67,6 @@
          code_change/3]).
 
 -include("mfdb.hrl").
--define(REAP_POLL_INTERVAL, 30000).
 
 -type dbrec() :: tuple().
 -type foldfun() :: fun((fdb_tx(), dbrec(), any()) -> any()) | fun((dbrec(), any()) -> any()).
@@ -94,8 +93,10 @@ create_table(Table, Options) when is_atom(Table) ->
 %% @doc Delete all components and data of a table
 -spec delete_table(Table :: table_name()) -> ok | {error, not_connected}.
 delete_table(Table) when is_atom(Table) ->
-    try gen_server:call(?TABPROC(Table), stop, infinity),
-         gen_server:call(mfdb_manager, {delete_table, Table})
+    try
+        gen_server:call(?REAPERPROC(Table), stop, infinity),
+        gen_server:call(?TABPROC(Table), stop, infinity),
+        gen_server:call(mfdb_manager, {delete_table, Table})
     catch
         exit:{noproc, _}:_Stack ->
             {error, not_connected}
@@ -131,7 +132,8 @@ table_info(Table, InfoOpt)
         InfoOpt =:= count orelse
         InfoOpt =:= fields orelse
         InfoOpt =:= indexes orelse
-        InfoOpt =:= ttl) ->
+        InfoOpt =:= ttl orelse
+        InfoOpt =:= ttl_callback) ->
     try gen_server:call(?TABPROC(Table), {table_info, InfoOpt})
     catch
         exit:{noproc, _}:_Stack ->
@@ -368,15 +370,7 @@ start_link(Table) ->
 
 %% @private
 init([Table]) ->
-    %% Only start a reaper poller if table has TTL
-    #st{ttl = Ttl} = mfdb_manager:st(Table),
-    Poller = case Ttl of
-                 undefined ->
-                     undefined;
-                 _ ->
-                     poll_timer(undefined)
-             end,
-    {ok, #{table => Table, poller => Poller}}.
+    {ok, #{table => Table}}.
 
 %% @private
 handle_call(clear_table, _From, #{table := Table} = State) ->
@@ -460,15 +454,6 @@ handle_cast(_, State) ->
     {noreply, State}.
 
 %% @private
-handle_info(poll, #{table := Table, poller := Poller} = State) ->
-    %% Non-blocking reaping of expired records from table
-    case maps:get(reaper, State, undefined) of
-        undefined ->
-            PidRef = spawn_monitor(fun() -> reap_expired_(Table) end),
-            {noreply, State#{poller => poll_timer(Poller), reaper => PidRef}};
-        _ ->
-            {noreply, State#{poller => poll_timer(Poller)}}
-    end;
 handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, {ok, X}}}}, #{waiters := Waiters} = State) ->
     %% Import is completed
     case lists:keytake(ImportId, 1, Waiters) of
@@ -491,17 +476,6 @@ handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, ImportError}}}, #{
             gen_server:reply(From, ImportError),
             {noreply, State#{waiters => NWaiters}}
     end;
-handle_info({'DOWN', Ref, process, _Pid0, _Reason}, #{poller := Poller} = State) ->
-    case maps:get(reaper, State, undefined) of
-        undefined ->
-            {noreply, State#{poller => poll_timer(Poller)}};
-        {_Pid1, Ref} ->
-            erlang:demonitor(Ref),
-            {noreply, State#{poller => poll_timer(Poller), reaper => undefined}};
-        _PidRef ->
-            %% Unmatched ref???
-            {noreply, State#{poller => poll_timer(Poller)}}
-    end;
 handle_info(_UNKNOWN, State) ->
     {noreply, State}.
 
@@ -512,13 +486,6 @@ terminate(_, _) ->
 %% @private
 code_change(_, State, _) ->
     {ok, State}.
-
-%% @private
-poll_timer(undefined) ->
-    erlang:send_after(?REAP_POLL_INTERVAL, self(), poll);
-poll_timer(TRef) when is_reference(TRef) ->
-    erlang:cancel_timer(TRef),
-    erlang:send_after(?REAP_POLL_INTERVAL, self(), poll).
 
 %% @private
 key_subscribe_(Table, ReplyType, From, TblPfx, Key) ->
@@ -541,56 +508,6 @@ key_unsubscribe_(From, Prefix, Key) ->
         E:M:_St ->
             {error, {E,M}}
     end.
-
-%% @private
-reap_expired_(Table) ->
-    #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
-    case Ttl of
-        undefined ->
-            %% No expiration
-            ok;
-        _ ->
-            Now = erlang:universaltime(),
-            RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
-            RangeEnd = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END})),
-            reap_expired_(St, RangeStart, RangeEnd, Now)
-    end.
-
-%% @private
-reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
-    erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, 100}])),
-              LastKey = lists:foldl(
-                          fun({EncKey, <<>>}, LastKey) ->
-                                  %% Delete the actual expired record
-                                  <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
-                                  <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
-                                  case sext:decode(EncValue) of
-                                      {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < Now ->
-                                          try
-                                              ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
-                                              %% Key2Ttl have to be removed individually
-                                              TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                                              ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
-                                              EncKey
-                                          catch
-                                              _E:_M:_Stack ->
-                                                  LastKey
-                                          end;
-                                      _ ->
-                                          LastKey
-                                  end
-                          end, ok, KVs),
-              case LastKey of
-                  ok ->
-                      ok;
-                  LastKey ->
-                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
-              end
-      end).
-
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 

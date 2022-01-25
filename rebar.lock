@@ -1,7 +1,7 @@
 {"1.2.0",
 [{<<"erlfdb">>,
   {git,"https://github.com/leonardb/couchdb-erlfdb.git",
-       {ref,"2fbce84a5d4c5e2772fa78e15562d9787c85ec56"}},
+       {ref,"5e9cdb69bfdeacdedfea4f86fd48050304384435"}},
   0},
  {<<"gproc">>,
   {git,"https://github.com/uwiger/gproc.git",

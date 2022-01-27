@@ -65,14 +65,13 @@ load_fdb_nif_(#conn{tls_key_path = KeyPath, tls_cert_path = CertPath, tls_ca_pat
                          {tls_key_path, KeyPath}, %% these settings do not work as tls_key_bytes/tls_cert_bytes
                          {tls_cert_path, CertPath}],
     try
-        erlfdb_nif:init(FdbNetworkOptions),
+        ok = erlfdb_nif:init_manual(FdbNetworkOptions),
         ok
     catch
         error:{reload, _} ->
             io:format("NIF already loaded~n"),
             ok
     end.
-
 
 %% @doc Open and return an erlfdb database connection
 -spec connection() -> fdb_db().
@@ -81,7 +80,7 @@ connection() ->
     connection(Conn).
 
 -spec connection(#conn{}) -> fdb_db().
-connection(#conn{cluster = Cluster} = Conn) ->
-    ok = load_fdb_nif_(Conn),
+connection(#conn{cluster = Cluster} = _Conn) ->
+    %% ok = load_fdb_nif_(Conn),
     {erlfdb_database, _} = Db = erlfdb:open(Cluster),
     Db.

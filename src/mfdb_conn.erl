@@ -60,10 +60,9 @@ load_fdb_nif_(#conn{tls_key_path = undefined}) ->
             ok
     end;
 load_fdb_nif_(#conn{tls_key_path = KeyPath, tls_cert_path = CertPath, tls_ca_path = CAPath}) ->
-    {ok, CABytes} = file:read_file(binary_to_list(CAPath)),
-    FdbNetworkOptions = [{tls_ca_bytes, CABytes},
-                         {tls_key_path, KeyPath}, %% these settings do not work as tls_key_bytes/tls_cert_bytes
-                         {tls_cert_path, CertPath}],
+    FdbNetworkOptions = [{tls_ca_bytes, fread(CAPath)},
+                         {tls_key_bytes, fread(KeyPath)},
+                         {tls_cert_bytes, fread(CertPath)}],
     try
         ok = erlfdb_nif:init_manual(FdbNetworkOptions),
         ok
@@ -72,6 +71,12 @@ load_fdb_nif_(#conn{tls_key_path = KeyPath, tls_cert_path = CertPath, tls_ca_pat
             io:format("NIF already loaded~n"),
             ok
     end.
+
+fread(Path) when is_binary(Path) ->
+    fread(binary_to_list(Path));
+fread(Path) when is_list(Path) ->
+    {ok, Data} = file:read_file(Path),
+    Data.
 
 %% @doc Open and return an erlfdb database connection
 -spec connection() -> fdb_db().

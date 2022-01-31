@@ -15,8 +15,9 @@ It supports:
 **WARNING** Unlike mnesia, keypos cannot be specified and the key is always the first field of the record.
 
 ## Requirements
- - FoundationDB 6.2.x Server and Client: https://www.foundationdb.org/download/
+ - FoundationDB 6.3.x Server and Client: https://www.foundationdb.org/download/
  - `couchdb-erlfdb`: https://github.com/leonardb/couchdb-erlfdb This is forked from https://github.com/apache/couchdb-erlfdb with changes to support rebar3, alternate build, dialyzer fixes, and custom native types.
+ - `{erlfdb, [{init, manual},{api_version, 630}]}` must be in your application's sys.config. This allows mfdb to control the erlfdb NIF loading and network settings. 
 
 # Table creation options
 

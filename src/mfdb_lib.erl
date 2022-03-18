@@ -895,7 +895,7 @@ fdb_err(4000) -> unknown_error;
 fdb_err(4100) -> internal_error.
 
 wait(Something) ->
-    wait(Something, 5000).
+    wait(Something, infinity).
 
 wait(Something, Timeout) ->
     erlfdb:wait(Something, [{timeout, Timeout}]).

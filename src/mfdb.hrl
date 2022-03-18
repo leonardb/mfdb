@@ -125,7 +125,8 @@
          hca_ref,   %% opaque :: #erlfdb_hca{} record used for mfdb_part() keys    :: erlfdb_hca:create(<<"parts_", TableId/binary>>).
          info           = [],
          ttl            = undefined     :: undefined | ttl(),
-         write_lock     = false         :: boolean()
+         write_lock     = false         :: boolean(),
+         counters       = #{}           :: #{binary() => integer()} %% Map #{<<"counter key">> => integer(shard count)}
         }).
 
 -type st() :: #st{}.

@@ -28,6 +28,7 @@
          code_change/3]).
 
 -export([create_key_/0]).
+-export([update_counters/1]).
 
 -include("mfdb.hrl").
 
@@ -212,9 +213,27 @@ load_table_(Tab) ->
                     ok = persistent_term:put({mfdb, Tab}, TableSt#st{db = Db}),
                     ok = mfdb_tables_sup:add(binary_to_atom(Tab))
             end;
-        #st{} ->
+        #st{} = St ->
             %% table already loaded
+            io:format("~p~n",[St]),
             ok
+    end.
+
+update_counters(#st{db = Db, tab = Tab, counters = Counters}) ->
+    #conn{key_id = KeyId} = persistent_term:get(mfdb_conn),
+    TabKey = sext:encode({KeyId, <<"table">>, Tab}),
+    case erlfdb:wait(erlfdb:get(Db, TabKey)) of
+        not_found ->
+            {error, no_such_table};
+        EncSt ->
+            NTabSt0 = binary_to_term(EncSt),
+            NTabSt = NTabSt0#st{counters = Counters},
+            erlfdb:transactional(
+              Db,
+              fun(Tx) ->
+                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+              end),
+            ok = persistent_term:put({mfdb, Tab}, NTabSt)
     end.
 
 create_table_(Tab, Record0, Indexes, Ttl) when is_binary(Tab) ->
@@ -288,8 +307,29 @@ convert_table_rec(Db, TabKey, TabEnc) ->
     case binary_to_term(TabEnc) of
         #st{} = St ->
             St;
+%%        {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
+%%         Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
+%%            NTabSt = #st{tab = Tab,
+%%                         key_id = KeyId0,
+%%                         alias = Alias,
+%%                         record_name = RecordName,
+%%                         fields = Fields,
+%%                         index = Index,
+%%                         db = Db0,
+%%                         table_id = TableId,
+%%                         pfx = Pfx,
+%%                         hca_ref = HcaRef,
+%%                         info = Info,
+%%                         ttl = Ttl,
+%%                         write_lock = WriteLock},
+%%            erlfdb:transactional(
+%%              Db,
+%%              fun(Tx) ->
+%%                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+%%              end),
+%%            NTabSt;
         {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
-         Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
+         Db0, TableId, Pfx, HcaRef, Info, Ttl, WriteLock} ->
             NTabSt = #st{tab = Tab,
                          key_id = KeyId0,
                          alias = Alias,
@@ -302,7 +342,8 @@ convert_table_rec(Db, TabKey, TabEnc) ->
                          hca_ref = HcaRef,
                          info = Info,
                          ttl = Ttl,
-                         write_lock = WriteLock},
+                         write_lock = WriteLock,
+                         counters = #{}},
             erlfdb:transactional(
               Db,
               fun(Tx) ->

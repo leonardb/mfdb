@@ -30,9 +30,9 @@
          idx_matches/3,
          table_count/1,
          table_data_size/1,
-         update_counter/4,
+         update_counter/5,
          delete_counter/3,
-         set_counter/4,
+         set_counter/5,
          validate_reply_/1,
          unixtime/0,
          expires/1,
@@ -52,7 +52,8 @@
          check_index_sizes/2]).
 
 -export([mk_tx/1,
-         fdb_err/1]).
+         fdb_err/1,
+         counter_read_/3]).
 
 -include("mfdb.hrl").
 
@@ -474,34 +475,38 @@ save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
     ok = wait(erlfdb:set(Tx, Key, Tail)),
     save_parts_(Tx, TabPfx, PartId, PartInc + 1, <<>>).
 
-update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
-    try do_update_counter(Db, TabPfx, Key, Incr)
+update_counter(Db, TabPfx, Key, Shards, Incr) when Shards =:= undefined ->
+    update_counter(Db, TabPfx, Key, ?ENTRIES_PER_COUNTER, Incr);
+update_counter(?IS_DB = Db, TabPfx, Key, Shards, Incr) ->
+    try do_update_counter(Db, TabPfx, Key, Shards, Incr)
     catch
         error:{erlfdb_error,1020}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),
-            update_counter(Db, TabPfx, Key, Incr);
+            update_counter(Db, TabPfx, Key, Shards, Incr);
         error:{erlfdb_error,1025}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),
-            update_counter(Db, TabPfx, Key, Incr)
+            update_counter(Db, TabPfx, Key, Shards, Incr)
     end.
 
-do_update_counter(Db, TabPfx, Key, Increment) ->
+do_update_counter(Db, TabPfx, Key, Shards, Increment) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
               %% Increment random counter
-              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
+              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
               wait(erlfdb:add(Tx, EncKey, Increment)),
               %% Read the updated counter value
               counter_read_(Tx, TabPfx, Key)
       end).
 
-set_counter(?IS_DB = Db, TabPfx, Key, Value) ->
+set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) when Shards =:= undefined ->
+    set_counter(?IS_DB = Db, TabPfx, Key, ?ENTRIES_PER_COUNTER, Value);
+set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
               Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
-              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
+              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
               ok = wait(erlfdb:clear_range_startswith(Tx, Pfx)),
               ok = wait(erlfdb:add(Tx, EncKey, Value))
       end).
@@ -895,7 +900,7 @@ fdb_err(4000) -> unknown_error;
 fdb_err(4100) -> internal_error.
 
 wait(Something) ->
-    wait(Something, 5000).
+    wait(Something, infinity).
 
 wait(Something, Timeout) ->
     erlfdb:wait(Something, [{timeout, Timeout}]).

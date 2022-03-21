@@ -34,7 +34,8 @@
 -export([update/3]).
 -export([delete/2]).
 
--export([set_counter/3,
+-export([init_counter/3,
+         set_counter/3,
          update_counter/3,
          delete_counter/2]).
 
@@ -285,20 +286,56 @@ validate_updates_([{FieldName, FieldType} | Rest], Changes, Pos, ChangeTuple, Va
 %% @doc Atomic counter increment/decrement
 -spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> integer().
 update_counter(Table, Key, Increment) when is_atom(Table) andalso is_integer(Increment) ->
-    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
-    mfdb_lib:update_counter(Db, TabPfx, Key, Increment).
+    #st{db = Db, pfx = TabPfx, counters = Counters} = mfdb_manager:st(Table),
+    mfdb_lib:update_counter(Db, TabPfx, Key, maps:get(Key, Counters, undefined), Increment).
 
 %% @doc Atomic counter delete
 -spec delete_counter(Table :: table_name(), Key :: any()) -> ok.
 delete_counter(Table, Key) when is_atom(Table) ->
-    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
-    mfdb_lib:delete_counter(Db, TabPfx, Key).
+    #st{db = Db, pfx = TabPfx, counters = Counters0} = St = mfdb_manager:st(Table),
+    ok = mfdb_lib:delete_counter(Db, TabPfx, Key),
+    Counters = maps:remove(Key, Counters0),
+    mfdb_manager:update_counters(St#st{counters = Counters}).
+
+%% @doc Atomic set of a counter value
+-spec init_counter(Table :: table_name(), Key :: any(), Shards :: integer()) -> ok | {error, atom()}.
+init_counter(Table, Key, ShardCount) when is_atom(Table) andalso is_integer(ShardCount) ->
+    #st{counters = Counters0, pfx = TabPfx, db = Db} = St = mfdb_manager:st(Table),
+    case maps:get(Key, Counters0, undefined) of
+        undefined ->
+            %% Add a new counter
+            Counters = Counters0#{Key => ShardCount},
+            ok = mfdb_manager:update_counters(St#st{counters = Counters});
+        ShardCount ->
+            %% No change, do nothing
+            ok;
+        OldShardCount when OldShardCount > ShardCount ->
+            %% Reduce the number of shards
+            Counters = Counters0#{Key => ShardCount},
+            ok = mfdb_manager:update_counters(St#st{counters = Counters}),
+            erlfdb:transactional(
+              Db,
+              fun(Tx) ->
+                      %% Increment random counter
+                      EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),
+                      %% Read the updated counter value
+                      CurrentCount = mfdb_lib:counter_read_(Tx, TabPfx, Key),
+                      Pfx = mfdb_lib:encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+                      ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Pfx)),
+                      EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),
+                      ok = erlfdb:wait(erlfdb:add(Tx, EncKey, CurrentCount))
+              end);
+        _OldShardCount ->
+            %% Increase the number of shards
+            Counters = Counters0#{Key => ShardCount},
+            ok = mfdb_manager:update_counters(St#st{counters = Counters})
+    end.
 
 %% @doc Atomic set of a counter value
 -spec set_counter(Table :: table_name(), Key :: any(), Value :: integer()) -> ok.
 set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
-    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
-    mfdb_lib:set_counter(Db, TabPfx, Key, Value).
+    #st{db = Db, pfx = TabPfx, counters = Counters} = mfdb_manager:st(Table),
+    mfdb_lib:set_counter(Db, TabPfx, Key, maps:get(Key, Counters, undefined), Value).
 
 %%fold(Table, InnerFun, OuterAcc)
 %%  when is_atom(Table) andalso

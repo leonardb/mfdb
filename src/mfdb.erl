@@ -37,7 +37,8 @@
 -export([init_counter/3,
          set_counter/3,
          update_counter/3,
-         delete_counter/2]).
+         delete_counter/2,
+         read_counter/2]).
 
 -export([lookup/2]).
 
@@ -283,6 +284,10 @@ validate_updates_([{FieldName, FieldType} | Rest], Changes, Pos, ChangeTuple, Va
             validate_updates_(Rest, NChanges, Pos + 1, NChangeTuple, [Value | ValueAcc], [{FieldName, FieldType} | TypeAcc])
     end.
 
+read_counter(Table, Key) ->
+    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
+    mfdb_lib:read_counter(Db, TabPfx, Key).
+
 %% @doc Atomic counter increment/decrement
 -spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> integer().
 update_counter(Table, Key, Increment) when is_atom(Table) andalso is_integer(Increment) ->
@@ -319,7 +324,7 @@ init_counter(Table, Key, ShardCount) when is_atom(Table) andalso is_integer(Shar
                       %% Increment random counter
                       EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),
                       %% Read the updated counter value
-                      CurrentCount = mfdb_lib:counter_read_(Tx, TabPfx, Key),
+                      CurrentCount = mfdb_lib:read_counter(Tx, TabPfx, Key),
                       Pfx = mfdb_lib:encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
                       ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Pfx)),
                       EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),

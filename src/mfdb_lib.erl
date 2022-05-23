@@ -32,6 +32,7 @@
          table_data_size/1,
          update_counter/5,
          delete_counter/3,
+         read_counter/3,
          set_counter/5,
          validate_reply_/1,
          unixtime/0,
@@ -52,8 +53,7 @@
          check_index_sizes/2]).
 
 -export([mk_tx/1,
-         fdb_err/1,
-         counter_read_/3]).
+         fdb_err/1]).
 
 -include("mfdb.hrl").
 
@@ -496,7 +496,7 @@ do_update_counter(Db, TabPfx, Key, Shards, Increment) ->
               EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
               wait(erlfdb:add(Tx, EncKey, Increment)),
               %% Read the updated counter value
-              counter_read_(Tx, TabPfx, Key)
+              read_counter(Tx, TabPfx, Key)
       end).
 
 set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) when Shards =:= undefined ->
@@ -511,7 +511,10 @@ set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) ->
               ok = wait(erlfdb:add(Tx, EncKey, Value))
       end).
 
-counter_read_(Tx, TabPfx, Key) ->
+read_counter(?IS_DB = Db, TabPfx, Key) ->
+    Tx = erlfdb:create_transaction(Db),
+    read_counter(Tx, TabPfx, Key);
+read_counter(?IS_TX = Tx, TabPfx, Key) ->
     Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
     case wait(erlfdb:get_range_startswith(Tx, Pfx)) of
         [] ->

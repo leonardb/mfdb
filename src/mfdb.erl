@@ -286,7 +286,7 @@ validate_updates_([{FieldName, FieldType} | Rest], Changes, Pos, ChangeTuple, Va
 
 read_counter(Table, Key) ->
     #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
-    mfdb_lib:read_counter(Db, TabPfx, Key).
+    erlfdb:transactional(Db, fun(Tx) -> mfdb_lib:read_counter(Tx, TabPfx, Key) end).
 
 %% @doc Atomic counter increment/decrement
 -spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> integer().

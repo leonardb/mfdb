@@ -478,14 +478,17 @@ save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
 update_counter(Db, TabPfx, Key, Shards, Incr) when Shards =:= undefined ->
     update_counter(Db, TabPfx, Key, ?ENTRIES_PER_COUNTER, Incr);
 update_counter(?IS_DB = Db, TabPfx, Key, Shards, Incr) ->
-    try do_update_counter(Db, TabPfx, Key, Shards, Incr)
+    try do_update_counter(Db, TabPfx, Key, Shards, Incr),
+        read_counter(Db, TabPfx, Key)
     catch
         error:{erlfdb_error,1020}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),
             update_counter(Db, TabPfx, Key, Shards, Incr);
         error:{erlfdb_error,1025}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),
-            update_counter(Db, TabPfx, Key, Shards, Incr)
+            update_counter(Db, TabPfx, Key, Shards, Incr);
+        Err:Msg:St ->
+            error_logger:error_msg("Update counter error: ~p", [{Err, Msg, St}])
     end.
 
 do_update_counter(Db, TabPfx, Key, Shards, Increment) ->
@@ -494,9 +497,9 @@ do_update_counter(Db, TabPfx, Key, Shards, Increment) ->
       fun(Tx) ->
               %% Increment random counter
               EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
-              wait(erlfdb:add(Tx, EncKey, Increment)),
+              wait(erlfdb:add(Tx, EncKey, Increment))
               %% Read the updated counter value
-              read_counter(Tx, TabPfx, Key)
+              %%read_counter(Tx, TabPfx, Key)
       end).
 
 set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) when Shards =:= undefined ->
@@ -512,8 +515,17 @@ set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) ->
       end).
 
 read_counter(?IS_DB = Db, TabPfx, Key) ->
-    Tx = erlfdb:create_transaction(Db),
-    read_counter(Tx, TabPfx, Key);
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+              case erlfdb:get_range_startswith(Tx, Pfx) of
+                  [] ->
+                      0;
+                  KVs ->
+                      lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
+              end
+      end);
 read_counter(?IS_TX = Tx, TabPfx, Key) ->
     Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
     case wait(erlfdb:get_range_startswith(Tx, Pfx)) of

@@ -228,17 +228,23 @@ upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert) when is_function(Upsert, 1) 
         _ ->
             wait(erlfdb:commit(Tx))
     end;
-upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
+upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx, record_name = RecName} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
     ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
     case wait(erlfdb:get(Tx, EncKey)) of
         not_found ->
             {ok, Record} = Upsert(null),
-            ok = write(St, PkValue, Record);
+            case element(1, Record) =:= RecName of
+                true ->
+                    ok = write(St, PkValue, Record);
+                false ->
+                    ok = wait(erlfdb:cancel(Tx)),
+                    {error, mismatched_record}
+            end;
         EncVal ->
             DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
             {ok, Record} = Upsert(DecodedVal),
-            case element(1, DecodedVal) =:= element(1, Record) of
+            case element(1, DecodedVal) =:= element(1, Record) =:= RecName of
                 false ->
                     ok = wait(erlfdb:cancel(Tx)),
                     {error, mismatched_record};

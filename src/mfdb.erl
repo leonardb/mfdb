@@ -21,7 +21,8 @@
 -behaviour(gen_server).
 
 %% API
--export([connect/1]).
+-export([connect/1,
+         connect/2]).
 
 -export([create_table/2,
          delete_table/1,
@@ -78,7 +79,12 @@
 %% @doc Starts the management server for a table
 -spec connect(Table :: table_name()) -> ok | {error, no_such_table}.
 connect(Table) when is_atom(Table) ->
-    gen_server:call(mfdb_manager, {connect, Table}).
+    connect(Table, 5000).
+
+%% @doc Starts the management server for a table
+-spec connect(Table :: table_name(), Timeout :: pos_integer()) -> ok | {error, no_such_table}.
+connect(Table, Timeout) when is_atom(Table) ->
+    gen_server:call(mfdb_manager, {connect, Table}, Timeout).
 
 %% @doc
 %% Create a new table if it does not exist.

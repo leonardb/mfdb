@@ -251,7 +251,7 @@ mk_insert_flow_(StOrTx, RecName, Fields, Index, Ttl, ObjectTuple) ->
 
 %% @doc Update an existing record
 %% Changes can be a list of field changes or a 1-arity function which returns {ok, NewRecord} of the same record type
--spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) -> ok | {error, not_found}.
+-spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) -> ok | {error, not_found | mismatched_record}.
 update(Table, Key, Changes)
   when is_atom(Table) andalso
        is_list(Changes)  ->
@@ -285,7 +285,7 @@ update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} 
 
 %% @doc Either update an existing record or create a new record
 %% the provided fun will be 1-arity with signature fun(null | record()) -> {ok, record()}
--spec upsert(TableOrTx :: table_name() | st(), Key :: any(), function()) -> ok.
+-spec upsert(TableOrTx :: table_name() | st(), Key :: any(), function()) -> ok | {error, mismatched_record}.
 upsert(Table, Key, Fun)
     when is_atom(Table) andalso
     is_function(Fun, 1)  ->

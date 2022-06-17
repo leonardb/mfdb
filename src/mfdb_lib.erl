@@ -221,7 +221,7 @@ update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
 %% @end
 upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
     Tx = erlfdb:create_transaction(Db),
-    case update(St#st{db = Tx}, PkValue, Upsert) of
+    case upsert(St#st{db = Tx}, PkValue, Upsert) of
         {error, not_found} ->
             ok = wait(erlfdb:cancel(Tx)),
             {error, not_found};

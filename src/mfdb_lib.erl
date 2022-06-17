@@ -244,7 +244,7 @@ upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx, record_name = RecName} = St, PkValue,
         EncVal ->
             DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
             {ok, Record} = Upsert(DecodedVal),
-            case element(1, DecodedVal) =:= element(1, Record) =:= RecName of
+            case [RecName, RecName] =:= [element(1, DecodedVal), element(1, Record)] of
                 false ->
                     ok = wait(erlfdb:cancel(Tx)),
                     {error, mismatched_record};

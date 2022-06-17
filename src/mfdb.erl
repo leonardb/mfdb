@@ -289,11 +289,11 @@ update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} 
 upsert(Table, Key, Fun)
     when is_atom(Table) andalso
     is_function(Fun, 1)  ->
-    #st{write_lock = true} = St = mfdb_manager:st(Table),
-    mfdb_lib:upsert(St, Key, Fun);
+    #st{} = St = mfdb_manager:st(Table),
+    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun);
 upsert(#st{db = ?IS_TX} = St, Key, Fun)
     when is_function(Fun, 1)  ->
-    mfdb_lib:upsert(St, Key, Fun).
+    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun).
 
 
 %% @private

@@ -79,7 +79,7 @@
 -type indexes()     :: [] | list(index()).
 -type mfdbrecord()  :: {atom(), fields()}.
 -type continuation() :: function().
--type field_changes() :: list({field(), any()}).
+-type field_changes() :: list({field(), any()}) | function().
 
 -type option() :: {record, mfdbrecord()} |
                   {indexes, indexes()} |

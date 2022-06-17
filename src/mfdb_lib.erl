@@ -183,6 +183,25 @@ update(#st{db = ?IS_DB = Db} = St, PkValue, UpdateRec) ->
         _ ->
             wait(erlfdb:commit(Tx))
     end;
+update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateOp)
+    when is_function(UpdateOp, 1)->
+    EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
+    ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    case wait(erlfdb:get(Tx, EncKey)) of
+        not_found ->
+            ok = wait(erlfdb:cancel(Tx)),
+            {error, not_found};
+        EncVal ->
+            DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
+            {ok, Record} = UpdateOp(DecodedVal),
+            case element(1, DecodedVal) =:= element(1, Record) of
+                false ->
+                    ok = wait(erlfdb:cancel(Tx)),
+                    {error, mismatched_record};
+                true ->
+                    ok = write(St, PkValue, Record)
+            end
+    end;
 update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
     ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),

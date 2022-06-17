@@ -249,12 +249,18 @@ mk_insert_flow_(StOrTx, RecName, Fields, Index, Ttl, ObjectTuple) ->
      {fun mfdb_lib:write/3, [StOrTx, RKey, ObjectTuple]}].
 
 %% @doc Update an existing record
+%% Changes can be a list of field changes or a 1-arity function which returns {ok, NewRecord} of the same record type
 -spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) -> ok | {error, not_found}.
 update(Table, Key, Changes)
   when is_atom(Table) andalso
        is_list(Changes)  ->
     #st{} = St = mfdb_manager:st(Table),
     update(St, Key, Changes);
+update(Table, Key, Changes)
+    when is_atom(Table) andalso
+    is_function(Changes, 1)  ->
+    #st{write_lock = true} = St = mfdb_manager:st(Table),
+    mfdb_lib:update(St, Key, Changes);
 update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St, Key, Changes)
   when is_list(Changes) ->
     IndexList = tl(tuple_to_list(Index)),

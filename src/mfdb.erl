@@ -261,6 +261,9 @@ update(Table, Key, Changes)
     is_function(Changes, 1)  ->
     #st{write_lock = true} = St = mfdb_manager:st(Table),
     mfdb_lib:update(St, Key, Changes);
+update(#st{db = ?IS_TX} = St, Key, Changes)
+    when is_function(Changes, 1)  ->
+    mfdb_lib:update(St, Key, Changes);
 update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St, Key, Changes)
   when is_list(Changes) ->
     IndexList = tl(tuple_to_list(Index)),

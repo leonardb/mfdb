@@ -20,6 +20,7 @@
 -export([write/3,
          delete/2,
          update/3,
+         upsert/3,
          bin_split/1,
          bin_join_parts/1,
          decode_key/2,
@@ -184,7 +185,7 @@ update(#st{db = ?IS_DB = Db} = St, PkValue, UpdateRec) ->
             wait(erlfdb:commit(Tx))
     end;
 update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateOp)
-    when is_function(UpdateOp, 1)->
+  when is_function(UpdateOp, 1)->
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
     ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
     case wait(erlfdb:get(Tx, EncKey)) of
@@ -213,6 +214,37 @@ update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
             DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
             Record = merge_record_(tuple_to_list(DecodedVal), tuple_to_list(UpdateRec)),
             ok = write(St, PkValue, Record)
+    end.
+
+%% @doc
+%% Update a record. This performs multiple read operations but with a write lock on the key.
+%% @end
+upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
+    Tx = erlfdb:create_transaction(Db),
+    case update(St#st{db = Tx}, PkValue, Upsert) of
+        {error, not_found} ->
+            ok = wait(erlfdb:cancel(Tx)),
+            {error, not_found};
+        _ ->
+            wait(erlfdb:commit(Tx))
+    end;
+upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
+    EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
+    ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    case wait(erlfdb:get(Tx, EncKey)) of
+        not_found ->
+            {ok, Record} = Upsert(null),
+            ok = write(St, PkValue, Record);
+        EncVal ->
+            DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
+            {ok, Record} = Upsert(DecodedVal),
+            case element(1, DecodedVal) =:= element(1, Record) of
+                false ->
+                    ok = wait(erlfdb:cancel(Tx)),
+                    {error, mismatched_record};
+                true ->
+                    ok = write(St, PkValue, Record)
+            end
     end.
 
 merge_record_(Old, New) ->
@@ -498,7 +530,7 @@ update_counter(Db, TabPfx, Key, Shards, Incr) when Shards =:= undefined ->
     update_counter(Db, TabPfx, Key, ?ENTRIES_PER_COUNTER, Incr);
 update_counter(?IS_DB = Db, TabPfx, Key, Shards, Incr) ->
     try do_update_counter(Db, TabPfx, Key, Shards, Incr),
-        read_counter(Db, TabPfx, Key)
+         read_counter(Db, TabPfx, Key)
     catch
         error:{erlfdb_error,1020}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),

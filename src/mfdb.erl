@@ -33,6 +33,7 @@
 
 -export([insert/2]).
 -export([update/3]).
+-export([upsert/3]).
 -export([delete/2]).
 
 -export([init_counter/3,
@@ -281,6 +282,19 @@ update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} 
                     {fun mfdb_lib:update/3, [St, Key, UpdateRec]}],
             mfdb_lib:flow(Flow, true)
     end.
+
+%% @doc Either update an existing record or create a new record
+%% the provided fun will be 1-arity with signature fun(null | record()) -> {ok, record()}
+-spec upsert(TableOrTx :: table_name() | st(), Key :: any(), function()) -> ok.
+upsert(Table, Key, Fun)
+    when is_atom(Table) andalso
+    is_function(Fun, 2)  ->
+    #st{write_lock = true} = St = mfdb_manager:st(Table),
+    mfdb_lib:upsert(St, Key, Fun);
+upsert(#st{db = ?IS_TX} = St, Key, Fun)
+    when is_function(Fun, 2)  ->
+    mfdb_lib:upsert(St, Key, Fun).
+
 
 %% @private
 %% Assign the values in changes to the correct positions in the ChangeTuple

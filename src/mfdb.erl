@@ -1557,7 +1557,8 @@ ffold_idx_match_fun_(#st{} = St, IdxMs, RecMatchFun) ->
     end.
 
 ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
-    fun(#st{db = Db, write_lock = WLock} = St, PkVal, Acc0) ->
+    fun(#st{db = Db, write_lock = WLock0} = St, PkVal, Acc0) ->
+            WLock = mfdb_lib:to_bool(WLock0),
             EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
             Tx = erlfdb:create_transaction(Db),
             case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
@@ -1613,7 +1614,8 @@ ffold_idx_apply_fun_([{K, _V} | Rest], TabPfx, MatchFun, Acc) ->
             ffold_idx_apply_fun_(Rest, TabPfx, MatchFun, NAcc)
     end.
 
-ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
+ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
+    WLock = mfdb_lib:to_bool(WLock0),
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St)}]) of
         [] ->
             [];
@@ -1634,7 +1636,8 @@ ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, In
             end
     end.
 
-ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, Start0, End) ->
+ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, Start0, End) ->
+    WLock = mfdb_lib:to_bool(WLock0),
     Start = erlfdb_key:first_greater_than(Start0),
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St) + 1}]) of
         [] ->
@@ -1707,7 +1710,8 @@ ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
 
 ffold_loop_recs([], _St, _InnerFun, _Ms, InnerAcc) ->
     InnerAcc;
-ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock} = St, InnerFun, Ms, InnerAcc) ->
+ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock0} = St, InnerFun, Ms, InnerAcc) ->
+    WLock = mfdb_lib:to_bool(WLock0),
     case ets:match_spec_run([Rec], Ms) of
         [] ->
             %% Record did not match specification

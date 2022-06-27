@@ -342,7 +342,7 @@ convert_table_rec(Db, TabKey, TabEnc) ->
                          hca_ref = HcaRef,
                          info = Info,
                          ttl = Ttl,
-                         write_lock = WriteLock,
+                         write_lock = mfdb_lib:to_bool(WriteLock),
                          counters = #{}},
             erlfdb:transactional(
               Db,

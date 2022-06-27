@@ -54,7 +54,8 @@
          check_index_sizes/2]).
 
 -export([mk_tx/1,
-         fdb_err/1]).
+         fdb_err/1,
+         to_bool/1]).
 
 -include("mfdb.hrl").
 
@@ -344,7 +345,10 @@ mk_tx(#st{db = ?IS_DB = Db, write_lock = false} = St) ->
     St#st{db = FdbTx};
 mk_tx(#st{db = ?IS_DB = Db, write_lock = true} = St) ->
     FdbTx = erlfdb:create_transaction(Db),
-    St#st{db = FdbTx}.
+    St#st{db = FdbTx};
+mk_tx(#st{db = ?IS_DB = Db} = St) ->
+    FdbTx = erlfdb:create_transaction(Db),
+    St#st{db = FdbTx, write_lock = false}.
 
 -spec delete(#st{}, any()) -> ok.
 delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
@@ -982,3 +986,7 @@ commit(?IS_TX = Tx) ->
         true -> erlfdb:cancel(Tx), ok;
         false -> wait(erlfdb:commit(Tx), 10000)
     end.
+
+to_bool(true) -> true;
+to_bool(false) -> false;
+to_bool(_) -> false.

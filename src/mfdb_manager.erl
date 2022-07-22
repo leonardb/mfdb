@@ -46,6 +46,7 @@ st(Tab) ->
         #st{} = St ->
             St;
         _ ->
+            io:format("not connected to table ~p", [Tab]),
             {error, not_connected}
     end.
 

@@ -538,6 +538,16 @@ save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
 
 update_counter(Db, TabPfx, Key, Shards, Incr) when Shards =:= undefined ->
     update_counter(Db, TabPfx, Key, ?ENTRIES_PER_COUNTER, Incr);
+update_counter(?IS_DB = Db, TabPfx, Key, 1, Incr) ->
+    erlfdb:transactional(
+        Db,
+        fun(Tx) ->
+            %% Increment single counter
+            EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, 1}),
+            wait(erlfdb:add(Tx, EncKey, Incr)),
+            %% Read the updated counter value
+            wait(erlfdb:get(Tx, EncKey))
+        end);
 update_counter(?IS_DB = Db, TabPfx, Key, Shards, Incr) ->
     try do_update_counter(Db, TabPfx, Key, Shards, Incr),
          read_counter(Db, TabPfx, Key)
@@ -557,6 +567,7 @@ do_update_counter(Db, TabPfx, Key, Shards, Increment) ->
       Db,
       fun(Tx) ->
               %% Increment random counter
+          io:format("Shaers: ~p~n", [Shards]),
               EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
               wait(erlfdb:add(Tx, EncKey, Increment))
               %% Read the updated counter value

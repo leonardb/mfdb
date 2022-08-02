@@ -567,7 +567,6 @@ do_update_counter(Db, TabPfx, Key, Shards, Increment) ->
       Db,
       fun(Tx) ->
               %% Increment random counter
-          io:format("Shaers: ~p~n", [Shards]),
               EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
               wait(erlfdb:add(Tx, EncKey, Increment))
               %% Read the updated counter value

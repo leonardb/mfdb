@@ -1850,7 +1850,7 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
                        || {EncKey, Val} <- KeyVals]
               catch
                   E:M:Stack ->
-                      error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}]),
+                      %% error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}]),
                       '$end_of_table'
               end
       end).

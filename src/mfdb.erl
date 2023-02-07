@@ -21,7 +21,8 @@
 -behaviour(gen_server).
 
 %% API
--export([connect/1]).
+-export([connect/1,
+         connect/2]).
 
 -export([create_table/2,
          delete_table/1,
@@ -32,11 +33,14 @@
 
 -export([insert/2]).
 -export([update/3]).
+-export([upsert/3]).
 -export([delete/2]).
 
--export([set_counter/3,
+-export([init_counter/3,
+         set_counter/3,
          update_counter/3,
-         delete_counter/2]).
+         delete_counter/2,
+         read_counter/2]).
 
 -export([lookup/2]).
 
@@ -76,7 +80,12 @@
 %% @doc Starts the management server for a table
 -spec connect(Table :: table_name()) -> ok | {error, no_such_table}.
 connect(Table) when is_atom(Table) ->
-    gen_server:call(mfdb_manager, {connect, Table}).
+    connect(Table, 5000).
+
+%% @doc Starts the management server for a table
+-spec connect(Table :: table_name(), Timeout :: pos_integer()) -> ok | {error, no_such_table}.
+connect(Table, Timeout) when is_atom(Table) ->
+    gen_server:call(mfdb_manager, {connect, Table}, Timeout).
 
 %% @doc
 %% Create a new table if it does not exist.
@@ -241,12 +250,21 @@ mk_insert_flow_(StOrTx, RecName, Fields, Index, Ttl, ObjectTuple) ->
      {fun mfdb_lib:write/3, [StOrTx, RKey, ObjectTuple]}].
 
 %% @doc Update an existing record
--spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) -> ok | {error, not_found}.
+%% Changes can be a list of field changes or a 1-arity function which returns {ok, NewRecord} of the same record type
+-spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) -> ok | {error, not_found | mismatched_record}.
 update(Table, Key, Changes)
   when is_atom(Table) andalso
        is_list(Changes)  ->
     #st{} = St = mfdb_manager:st(Table),
     update(St, Key, Changes);
+update(Table, Key, Changes)
+    when is_atom(Table) andalso
+    is_function(Changes, 1)  ->
+    #st{write_lock = true} = St = mfdb_manager:st(Table),
+    mfdb_lib:update(St, Key, Changes);
+update(#st{db = ?IS_TX} = St, Key, Changes)
+    when is_function(Changes, 1)  ->
+    mfdb_lib:update(St, Key, Changes);
 update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St, Key, Changes)
   when is_list(Changes) ->
     IndexList = tl(tuple_to_list(Index)),
@@ -265,6 +283,19 @@ update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} 
             mfdb_lib:flow(Flow, true)
     end.
 
+%% @doc Either update an existing record or create a new record
+%% the provided fun will be 1-arity with signature fun(null | record()) -> {ok, record()}
+-spec upsert(TableOrTx :: table_name() | st(), Key :: any(), function()) -> ok | {error, mismatched_record}.
+upsert(Table, Key, Fun)
+    when is_atom(Table) andalso
+    is_function(Fun, 1)  ->
+    #st{} = St = mfdb_manager:st(Table),
+    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun);
+upsert(#st{db = ?IS_TX} = St, Key, Fun)
+    when is_function(Fun, 1)  ->
+    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun).
+
+
 %% @private
 %% Assign the values in changes to the correct positions in the ChangeTuple
 %% and verify that the fields in the changes are defined for the record
@@ -282,23 +313,63 @@ validate_updates_([{FieldName, FieldType} | Rest], Changes, Pos, ChangeTuple, Va
             validate_updates_(Rest, NChanges, Pos + 1, NChangeTuple, [Value | ValueAcc], [{FieldName, FieldType} | TypeAcc])
     end.
 
+read_counter(Table, Key) ->
+    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
+    erlfdb:transactional(Db, fun(Tx) -> mfdb_lib:read_counter(Tx, TabPfx, Key) end).
+
 %% @doc Atomic counter increment/decrement
 -spec update_counter(Table :: table_name(), Key :: any(), Increment :: integer()) -> integer().
 update_counter(Table, Key, Increment) when is_atom(Table) andalso is_integer(Increment) ->
-    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
-    mfdb_lib:update_counter(Db, TabPfx, Key, Increment).
+    #st{db = Db, pfx = TabPfx, counters = Counters} = mfdb_manager:st(Table),
+    mfdb_lib:update_counter(Db, TabPfx, Key, maps:get(Key, Counters, undefined), Increment).
 
 %% @doc Atomic counter delete
 -spec delete_counter(Table :: table_name(), Key :: any()) -> ok.
 delete_counter(Table, Key) when is_atom(Table) ->
-    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
-    mfdb_lib:delete_counter(Db, TabPfx, Key).
+    #st{db = Db, pfx = TabPfx, counters = Counters0} = St = mfdb_manager:st(Table),
+    ok = mfdb_lib:delete_counter(Db, TabPfx, Key),
+    Counters = maps:remove(Key, Counters0),
+    mfdb_manager:update_counters(St#st{counters = Counters}).
+
+%% @doc Atomic set of a counter value
+-spec init_counter(Table :: table_name(), Key :: any(), Shards :: integer()) -> ok | {error, atom()}.
+init_counter(Table, Key, ShardCount) when is_atom(Table) andalso is_integer(ShardCount) ->
+    #st{counters = Counters0, pfx = TabPfx, db = Db} = St = mfdb_manager:st(Table),
+    case maps:get(Key, Counters0, undefined) of
+        undefined ->
+            %% Add a new counter
+            Counters = Counters0#{Key => ShardCount},
+            ok = mfdb_manager:update_counters(St#st{counters = Counters});
+        ShardCount ->
+            %% No change, do nothing
+            ok;
+        OldShardCount when OldShardCount > ShardCount ->
+            %% Reduce the number of shards
+            Counters = Counters0#{Key => ShardCount},
+            ok = mfdb_manager:update_counters(St#st{counters = Counters}),
+            erlfdb:transactional(
+              Db,
+              fun(Tx) ->
+                      %% Increment random counter
+                      EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),
+                      %% Read the updated counter value
+                      CurrentCount = mfdb_lib:read_counter(Tx, TabPfx, Key),
+                      Pfx = mfdb_lib:encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+                      ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Pfx)),
+                      EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),
+                      ok = erlfdb:wait(erlfdb:add(Tx, EncKey, CurrentCount))
+              end);
+        _OldShardCount ->
+            %% Increase the number of shards
+            Counters = Counters0#{Key => ShardCount},
+            ok = mfdb_manager:update_counters(St#st{counters = Counters})
+    end.
 
 %% @doc Atomic set of a counter value
 -spec set_counter(Table :: table_name(), Key :: any(), Value :: integer()) -> ok.
 set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
-    #st{db = Db, pfx = TabPfx} = mfdb_manager:st(Table),
-    mfdb_lib:set_counter(Db, TabPfx, Key, Value).
+    #st{db = Db, pfx = TabPfx, counters = Counters} = mfdb_manager:st(Table),
+    mfdb_lib:set_counter(Db, TabPfx, Key, maps:get(Key, Counters, undefined), Value).
 
 %%fold(Table, InnerFun, OuterAcc)
 %%  when is_atom(Table) andalso
@@ -1486,7 +1557,8 @@ ffold_idx_match_fun_(#st{} = St, IdxMs, RecMatchFun) ->
     end.
 
 ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
-    fun(#st{db = Db, write_lock = WLock} = St, PkVal, Acc0) ->
+    fun(#st{db = Db, write_lock = WLock0} = St, PkVal, Acc0) ->
+            WLock = mfdb_lib:to_bool(WLock0),
             EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
             Tx = erlfdb:create_transaction(Db),
             case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
@@ -1542,7 +1614,8 @@ ffold_idx_apply_fun_([{K, _V} | Rest], TabPfx, MatchFun, Acc) ->
             ffold_idx_apply_fun_(Rest, TabPfx, MatchFun, NAcc)
     end.
 
-ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
+ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
+    WLock = mfdb_lib:to_bool(WLock0),
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St)}]) of
         [] ->
             [];
@@ -1563,7 +1636,8 @@ ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, In
             end
     end.
 
-ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock} = St, MatchFun, InAcc, Start0, End) ->
+ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, Start0, End) ->
+    WLock = mfdb_lib:to_bool(WLock0),
     Start = erlfdb_key:first_greater_than(Start0),
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St) + 1}]) of
         [] ->
@@ -1636,7 +1710,8 @@ ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
 
 ffold_loop_recs([], _St, _InnerFun, _Ms, InnerAcc) ->
     InnerAcc;
-ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock} = St, InnerFun, Ms, InnerAcc) ->
+ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock0} = St, InnerFun, Ms, InnerAcc) ->
+    WLock = mfdb_lib:to_bool(WLock0),
     case ets:match_spec_run([Rec], Ms) of
         [] ->
             %% Record did not match specification
@@ -1775,7 +1850,8 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
                        || {EncKey, Val} <- KeyVals]
               catch
                   E:M:Stack ->
-                      error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}])
+                      %% error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}]),
+                      '$end_of_table'
               end
       end).
 

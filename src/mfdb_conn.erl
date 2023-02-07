@@ -60,18 +60,23 @@ load_fdb_nif_(#conn{tls_key_path = undefined}) ->
             ok
     end;
 load_fdb_nif_(#conn{tls_key_path = KeyPath, tls_cert_path = CertPath, tls_ca_path = CAPath}) ->
-    {ok, CABytes} = file:read_file(binary_to_list(CAPath)),
-    FdbNetworkOptions = [{tls_ca_bytes, CABytes},
-                         {tls_key_path, KeyPath},
-                         {tls_cert_path, CertPath}],
+    FdbNetworkOptions = [{tls_ca_bytes, fread(CAPath)},
+                         {tls_key_bytes, fread(KeyPath)},
+                         {tls_cert_bytes, fread(CertPath)}],
     try
-        erlfdb_nif:init(FdbNetworkOptions),
+        ok = erlfdb_nif:init_manual(FdbNetworkOptions),
         ok
     catch
         error:{reload, _} ->
             io:format("NIF already loaded~n"),
             ok
     end.
+
+fread(Path) when is_binary(Path) ->
+    fread(binary_to_list(Path));
+fread(Path) when is_list(Path) ->
+    {ok, Data} = file:read_file(Path),
+    Data.
 
 %% @doc Open and return an erlfdb database connection
 -spec connection() -> fdb_db().
@@ -80,7 +85,7 @@ connection() ->
     connection(Conn).
 
 -spec connection(#conn{}) -> fdb_db().
-connection(#conn{cluster = Cluster} = Conn) ->
-    ok = load_fdb_nif_(Conn),
+connection(#conn{cluster = Cluster} = _Conn) ->
+    %% ok = load_fdb_nif_(Conn),
     {erlfdb_database, _} = Db = erlfdb:open(Cluster),
     Db.

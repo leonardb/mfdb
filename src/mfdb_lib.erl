@@ -20,6 +20,7 @@
 -export([write/3,
          delete/2,
          update/3,
+         upsert/3,
          bin_split/1,
          bin_join_parts/1,
          decode_key/2,
@@ -30,9 +31,10 @@
          idx_matches/3,
          table_count/1,
          table_data_size/1,
-         update_counter/4,
+         update_counter/5,
          delete_counter/3,
-         set_counter/4,
+         read_counter/3,
+         set_counter/5,
          validate_reply_/1,
          unixtime/0,
          expires/1,
@@ -52,7 +54,8 @@
          check_index_sizes/2]).
 
 -export([mk_tx/1,
-         fdb_err/1]).
+         fdb_err/1,
+         to_bool/1]).
 
 -include("mfdb.hrl").
 
@@ -182,6 +185,25 @@ update(#st{db = ?IS_DB = Db} = St, PkValue, UpdateRec) ->
         _ ->
             wait(erlfdb:commit(Tx))
     end;
+update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateOp)
+  when is_function(UpdateOp, 1)->
+    EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
+    ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    case wait(erlfdb:get(Tx, EncKey)) of
+        not_found ->
+            ok = wait(erlfdb:cancel(Tx)),
+            {error, not_found};
+        EncVal ->
+            DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
+            {ok, Record} = UpdateOp(DecodedVal),
+            case element(1, DecodedVal) =:= element(1, Record) of
+                false ->
+                    ok = wait(erlfdb:cancel(Tx)),
+                    {error, mismatched_record};
+                true ->
+                    ok = write(St, PkValue, Record)
+            end
+    end;
 update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
     ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
@@ -193,6 +215,43 @@ update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
             DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
             Record = merge_record_(tuple_to_list(DecodedVal), tuple_to_list(UpdateRec)),
             ok = write(St, PkValue, Record)
+    end.
+
+%% @doc
+%% Update a record. This performs multiple read operations but with a write lock on the key.
+%% @end
+upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
+    Tx = erlfdb:create_transaction(Db),
+    case upsert(St#st{db = Tx}, PkValue, Upsert) of
+        {error, not_found} ->
+            ok = wait(erlfdb:cancel(Tx)),
+            {error, not_found};
+        _ ->
+            wait(erlfdb:commit(Tx))
+    end;
+upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx, record_name = RecName} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
+    EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
+    ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    case wait(erlfdb:get(Tx, EncKey)) of
+        not_found ->
+            {ok, Record} = Upsert(null),
+            case element(1, Record) =:= RecName of
+                true ->
+                    ok = write(St, PkValue, Record);
+                false ->
+                    ok = wait(erlfdb:cancel(Tx)),
+                    {error, mismatched_record}
+            end;
+        EncVal ->
+            DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
+            {ok, Record} = Upsert(DecodedVal),
+            case [RecName, RecName] =:= [element(1, DecodedVal), element(1, Record)] of
+                false ->
+                    ok = wait(erlfdb:cancel(Tx)),
+                    {error, mismatched_record};
+                true ->
+                    ok = write(St, PkValue, Record)
+            end
     end.
 
 merge_record_(Old, New) ->
@@ -286,7 +345,10 @@ mk_tx(#st{db = ?IS_DB = Db, write_lock = false} = St) ->
     St#st{db = FdbTx};
 mk_tx(#st{db = ?IS_DB = Db, write_lock = true} = St) ->
     FdbTx = erlfdb:create_transaction(Db),
-    St#st{db = FdbTx}.
+    St#st{db = FdbTx};
+mk_tx(#st{db = ?IS_DB = Db} = St) ->
+    FdbTx = erlfdb:create_transaction(Db),
+    St#st{db = FdbTx, write_lock = false}.
 
 -spec delete(#st{}, any()) -> ok.
 delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
@@ -474,39 +536,68 @@ save_parts_(Tx, TabPfx, PartId, PartInc, Tail) ->
     ok = wait(erlfdb:set(Tx, Key, Tail)),
     save_parts_(Tx, TabPfx, PartId, PartInc + 1, <<>>).
 
-update_counter(?IS_DB = Db, TabPfx, Key, Incr) ->
-    try do_update_counter(Db, TabPfx, Key, Incr)
+update_counter(Db, TabPfx, Key, Shards, Incr) when Shards =:= undefined ->
+    update_counter(Db, TabPfx, Key, ?ENTRIES_PER_COUNTER, Incr);
+update_counter(?IS_DB = Db, TabPfx, Key, 1, Incr) ->
+    erlfdb:transactional(
+        Db,
+        fun(Tx) ->
+            %% Increment single counter
+            EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, 1}),
+            wait(erlfdb:add(Tx, EncKey, Incr)),
+            %% Read the updated counter value
+            wait(erlfdb:get(Tx, EncKey))
+        end);
+update_counter(?IS_DB = Db, TabPfx, Key, Shards, Incr) ->
+    try do_update_counter(Db, TabPfx, Key, Shards, Incr),
+         read_counter(Db, TabPfx, Key)
     catch
         error:{erlfdb_error,1020}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),
-            update_counter(Db, TabPfx, Key, Incr);
+            update_counter(Db, TabPfx, Key, Shards, Incr);
         error:{erlfdb_error,1025}:_Stack ->
             error_logger:error_msg("Update counter transaction cancelled, retrying"),
-            update_counter(Db, TabPfx, Key, Incr)
+            update_counter(Db, TabPfx, Key, Shards, Incr);
+        Err:Msg:St ->
+            error_logger:error_msg("Update counter error: ~p", [{Err, Msg, St}])
     end.
 
-do_update_counter(Db, TabPfx, Key, Increment) ->
+do_update_counter(Db, TabPfx, Key, Shards, Increment) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
               %% Increment random counter
-              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
-              wait(erlfdb:add(Tx, EncKey, Increment)),
+              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
+              wait(erlfdb:add(Tx, EncKey, Increment))
               %% Read the updated counter value
-              counter_read_(Tx, TabPfx, Key)
+              %%read_counter(Tx, TabPfx, Key)
       end).
 
-set_counter(?IS_DB = Db, TabPfx, Key, Value) ->
+set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) when Shards =:= undefined ->
+    set_counter(?IS_DB = Db, TabPfx, Key, ?ENTRIES_PER_COUNTER, Value);
+set_counter(?IS_DB = Db, TabPfx, Key, Shards, Value) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
               Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
-              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(?ENTRIES_PER_COUNTER)}),
+              EncKey = encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(Shards)}),
               ok = wait(erlfdb:clear_range_startswith(Tx, Pfx)),
               ok = wait(erlfdb:add(Tx, EncKey, Value))
       end).
 
-counter_read_(Tx, TabPfx, Key) ->
+read_counter(?IS_DB = Db, TabPfx, Key) ->
+    erlfdb:transactional(
+      Db,
+      fun(Tx) ->
+              Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+              case erlfdb:get_range_startswith(Tx, Pfx) of
+                  [] ->
+                      0;
+                  KVs ->
+                      lists:sum([Count || {_, <<Count:64/signed-little-integer>>} <- KVs])
+              end
+      end);
+read_counter(?IS_TX = Tx, TabPfx, Key) ->
     Pfx = encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
     case wait(erlfdb:get_range_startswith(Tx, Pfx)) of
         [] ->
@@ -895,7 +986,7 @@ fdb_err(4000) -> unknown_error;
 fdb_err(4100) -> internal_error.
 
 wait(Something) ->
-    wait(Something, 5000).
+    wait(Something, infinity).
 
 wait(Something, Timeout) ->
     erlfdb:wait(Something, [{timeout, Timeout}]).
@@ -905,3 +996,7 @@ commit(?IS_TX = Tx) ->
         true -> erlfdb:cancel(Tx), ok;
         false -> wait(erlfdb:commit(Tx), 10000)
     end.
+
+to_bool(true) -> true;
+to_bool(false) -> false;
+to_bool(_) -> false.

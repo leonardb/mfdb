@@ -30,7 +30,7 @@
          code_change/3]).
 
 -include("mfdb.hrl").
--define(REAP_POLL_INTERVAL, 500).
+-define(REAP_POLL_INTERVAL, 5000).
 -define(REAP_SEGMENT_SIZE, 200).
 -define(REAP_CALLBACK_PER_PROCESS, 10).
 
@@ -71,7 +71,9 @@ handle_cast(_, State) ->
 %% @private
 handle_info(timeout, #{table := Table} = State) ->
     %% Non-blocking reaping of expired records from table
-    try reap_expired_(Table) of
+    try inside_reap_window() andalso reap_expired_(Table) of
+        false ->
+            {noreply, State, 2000};
         0 ->
             {noreply, State, 2000};
         _Cnt ->
@@ -83,7 +85,9 @@ handle_info(timeout, #{table := Table} = State) ->
     end;
 handle_info(poll, #{table := Table, poller := Poller} = State) ->
     %% Non-blocking reaping of expired records from table
-    try reap_expired_(Table) of
+    try inside_reap_window() andalso reap_expired_(Table) of
+        false ->
+            {noreply, State#{poller => poll_timer(Poller)}};
         0 ->
             {noreply, State#{poller => poll_timer(Poller)}};
         _Cnt ->
@@ -169,3 +173,22 @@ reap_expired_(_Table, #st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, No
 
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+-spec inside_reap_window() -> boolean().
+inside_reap_window() ->
+    case {application:get_env(mfdb, reap_window_min, undefined),
+          application:get_env(mfdb, reap_window_max, undefined)} of
+        {undefined, undefined} ->
+            true;
+        {undefined, _} ->
+            true;
+        {_, undefined} ->
+            true;
+        {Min, Max} ->
+            {_Date, Time} = erlang:universaltime(),
+            case Time > Min andalso Time < Max of
+                true ->
+                    true;
+                false ->
+                    false
+            end
+    end.

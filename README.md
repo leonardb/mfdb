@@ -122,3 +122,8 @@ InnerFun = fun(Tx, #test{id = Id} = Rec, Acc) ->
                end
             end.
 ```
+
+### Application env options
+
+- Using `reap_window_min` and `reap_window_max` you can configure the window in which records will be reaped. These are time tuple values {Hour, Minute, Sec}
+ 

@@ -1849,7 +1849,7 @@ next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
                         mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
                        || {EncKey, Val} <- KeyVals]
               catch
-                  E:M:Stack ->
+                  _E:_M:_Stack ->
                       %% error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}]),
                       '$end_of_table'
               end

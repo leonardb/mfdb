@@ -85,7 +85,7 @@ flow_([{Fun, Args} | Rest], Match, Match) when is_function(Fun) ->
         false ->
             {error, bad_arity}
     end;
-flow_([{Fun, _Args} | _Rest], _Match, _Match) when not is_function(Fun) ->
+flow_([{Fun, _Args} | _Rest], _Match0, _Match1) when not is_function(Fun) ->
     {error, invalid_flow};
 flow_(_, _Match, Res) ->
     %% Here be dragons... You need to be careful when chaining the funs

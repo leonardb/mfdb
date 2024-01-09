@@ -39,10 +39,12 @@
 -define(ndbg(Dbg, Fmt, Args), case Dbg of true -> error_logger:info_msg(Fmt, Args); _ -> ok end).
 
 do_reap(Table) ->
-    do_reap(Table, false).
+    do_reap(Table, #{debug => false, segment_size => ?REAP_SEGMENT_SIZE}).
 
-do_reap(Table, Debug) ->
-    gen_server:call(?REAPERPROC(Table), {do_reap, Table, Debug}).
+do_reap(Table, Opts) when is_map(Opts) ->
+    gen_server:call(?REAPERPROC(Table), {do_reap, Table, Opts});
+do_reap(_Tab, _Opts) ->
+    {error, <<"Call as do_reap(Table :: atom(), Opts :: #{debug := boolean(), segment_size := pos_integer()}).">>}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
@@ -71,7 +73,9 @@ handle_call(stop, _From, State) ->
             exit(Pid, kill),
             {stop, normal, ok, State}
     end;
-handle_call({do_reap, Table, SegmentSize, Debug}, _From, #{table := Table} = State) ->
+handle_call({do_reap, Table, Opts}, _From, #{table := Table} = State) ->
+    Debug = maps:get(debug, Opts, false),
+    SegmentSize = maps:get(segment_size, Opts, ?REAP_SEGMENT_SIZE),
     Pid = spawn(fun() -> reap_expired_loop_(Table, SegmentSize, Debug) end),
     {reply, {ok, Pid}, State};
 handle_call(_, _, State) ->

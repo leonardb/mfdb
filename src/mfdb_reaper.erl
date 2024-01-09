@@ -20,6 +20,9 @@
 
 -behaviour(gen_server).
 
+-export([do_reap/1,
+         do_reap/2]).
+
 %% gen_server API
 -export([start_link/1,
          init/1,
@@ -33,6 +36,13 @@
 -define(REAP_POLL_INTERVAL, 5000).
 -define(REAP_SEGMENT_SIZE, 200).
 -define(REAP_CALLBACK_PER_PROCESS, 10).
+-define(ndbg(Dbg, Fmt, Args), case Dbg of true -> error_logger:info_msg(Fmt, Args); _ -> ok end).
+
+do_reap(Table) ->
+    do_reap(Table, false).
+
+do_reap(Table, Debug) ->
+    gen_server:call(?REAPERPROC(Table), {do_reap, Table, Debug}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
@@ -61,6 +71,9 @@ handle_call(stop, _From, State) ->
             exit(Pid, kill),
             {stop, normal, ok, State}
     end;
+handle_call({do_reap, Table, SegmentSize, Debug}, _From, #{table := Table} = State) ->
+    Pid = spawn(fun() -> reap_expired_loop_(Table, SegmentSize, Debug) end),
+    {reply, {ok, Pid}, State};
 handle_call(_, _, State) ->
     {reply, error, State}.
 
@@ -71,21 +84,21 @@ handle_cast(_, State) ->
 %% @private
 handle_info(timeout, #{table := Table} = State) ->
     %% Non-blocking reaping of expired records from table
-    try inside_reap_window() andalso reap_expired_(Table) of
+    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE, false) of
         false ->
-            {noreply, State, 2000};
+            {noreply, State};
         0 ->
-            {noreply, State, 2000};
+            {noreply, State};
         _Cnt ->
-            {noreply, State, 500}
+            {noreply, State, 0}
     catch
         E:M:St ->
             error_logger:error_msg("poller crash: ~p ~p ~p", [E,M,St]),
-            {noreply, State, 2000}
+            {noreply, State}
     end;
 handle_info(poll, #{table := Table, poller := Poller} = State) ->
     %% Non-blocking reaping of expired records from table
-    try inside_reap_window() andalso reap_expired_(Table) of
+    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE, false) of
         false ->
             {noreply, State#{poller => poll_timer(Poller)}};
         0 ->
@@ -122,25 +135,36 @@ poll_timer(TRef, T) when is_reference(TRef) ->
     erlang:send_after(T, self(), poll).
 
 %% @private
-reap_expired_(Table) ->
-    #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
-    case Ttl of
-        undefined ->
-            %% No expiration
-            0;
-        _ ->
-            Now = erlang:universaltime(),
-            RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
-            RangeEnd = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END})),
-            reap_expired_(Table, St, RangeStart, RangeEnd, Now)
+reap_expired_loop_(Table, SegmentSize, Debug) ->
+    case reap_expired_(Table, SegmentSize, Debug) of
+        0 ->
+            ok;
+        Count ->
+            ?ndbg(Debug, "Reaped ~w from table ~p", [Count, Table]),
+            reap_expired_loop_(Table, SegmentSize, Debug)
     end.
 
 %% @private
-reap_expired_(_Table, #st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now) ->
+reap_expired_(Table, SegmentSize, Debug) ->
+    #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
+    case Ttl of
+        undefined ->
+            ?ndbg(Debug, "No reaping for table ~p", [Table]),
+            0;
+        _ ->
+            ?ndbg(Debug, "Start reaping for table ~p", [Table]),
+            Now = erlang:universaltime(),
+            RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
+            RangeEnd = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END})),
+            reap_expired_(St, RangeStart, RangeEnd, Now, SegmentSize)
+    end.
+
+%% @private
+reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now, SegmentSize) ->
     erlfdb:transactional(
       Db,
       fun(Tx) ->
-              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, ?REAP_SEGMENT_SIZE}])),
+              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, SegmentSize}])),
               LastKey = lists:foldl(
                           fun({EncKey, <<>>}, LastKey) ->
                                   %% Delete the actual expired record
@@ -166,9 +190,10 @@ reap_expired_(_Table, #st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, No
                   ok ->
                       ok;
                   LastKey ->
-                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey)))
-              end,
-              length(KVs)
+                      Count = length(KVs),
+                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
+                      Count
+              end
       end).
 
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%

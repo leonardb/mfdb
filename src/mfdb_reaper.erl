@@ -76,7 +76,7 @@ handle_call(stop, _From, State) ->
 handle_call({do_reap, Table, Opts}, _From, #{table := Table} = State) ->
     Debug = maps:get(debug, Opts, false),
     SegmentSize = maps:get(segment_size, Opts, ?REAP_SEGMENT_SIZE),
-    Pid = spawn(fun() -> reap_expired_loop_(Table, SegmentSize, Debug) end),
+    Pid = spawn(fun() -> reap_expired_loop_(Table, SegmentSize, Debug, 0) end),
     {reply, {ok, Pid}, State};
 handle_call(_, _, State) ->
     {reply, error, State}.
@@ -139,13 +139,17 @@ poll_timer(TRef, T) when is_reference(TRef) ->
     erlang:send_after(T, self(), poll).
 
 %% @private
-reap_expired_loop_(Table, SegmentSize, Debug) ->
+reap_expired_loop_(Table, SegmentSize, Debug, Total) ->
     case reap_expired_(Table, SegmentSize, Debug) of
         0 ->
+            ?ndbg(Debug, "Reaping completed table ~p : ~w", [Table, Total]),
+            ok;
+        ok ->
+            ?ndbg(Debug, "Reaping completed table ~p : ~w", [Table, Total]),
             ok;
         Count ->
-            ?ndbg(Debug, "Reaped ~w from table ~p", [Count, Table]),
-            reap_expired_loop_(Table, SegmentSize, Debug)
+            ?ndbg(Debug, "Reaped ~w from table ~p : ~w", [Count, Table, Total + Count]),
+            reap_expired_loop_(Table, SegmentSize, Debug, Total + Count)
     end.
 
 %% @private

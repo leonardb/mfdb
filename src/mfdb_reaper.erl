@@ -157,10 +157,8 @@ reap_expired_(Table, SegmentSize, Debug) ->
     #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
     case Ttl of
         undefined ->
-            ?ndbg(Debug, "No reaping for table ~p", [Table]),
             0;
         _ ->
-            ?ndbg(Debug, "Start reaping for table ~p", [Table]),
             Now = erlang:universaltime(),
             RangeStart = mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, ?FDB_WC, ?FDB_WC}),
             RangeEnd = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?TTL_TO_KEY_PFX, Now, ?FDB_END})),

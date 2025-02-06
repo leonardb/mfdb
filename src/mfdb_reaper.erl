@@ -20,7 +20,8 @@
 
 -behaviour(gen_server).
 
--export([do_reap/1,
+-export([debug/1,
+         do_reap/1,
          do_reap/2]).
 
 %% gen_server API
@@ -37,6 +38,9 @@
 -define(REAP_SEGMENT_SIZE, 200).
 -define(REAP_CALLBACK_PER_PROCESS, 10).
 -define(ndbg(Dbg, Fmt, Args), case Dbg of true -> error_logger:info_msg(Fmt, Args); _ -> ok end).
+
+debug(Table) ->
+    gen_server:call(?REAPERPROC(Table), debug).
 
 do_reap(Table) ->
     do_reap(Table, #{debug => false, segment_size => ?REAP_SEGMENT_SIZE}).
@@ -78,6 +82,9 @@ handle_call({do_reap, Table, Opts}, _From, #{table := Table} = State) ->
     SegmentSize = maps:get(segment_size, Opts, ?REAP_SEGMENT_SIZE),
     Pid = spawn(fun() -> reap_expired_loop_(Table, SegmentSize, Debug, 0) end),
     {reply, {ok, Pid}, State};
+handle_call(debug, _From, State) ->
+    Debug = maps:get(debug, State, false) =:= false,
+    {reply, Debug, State#{debug => Debug}};
 handle_call(_, _, State) ->
     {reply, error, State}.
 
@@ -88,12 +95,16 @@ handle_cast(_, State) ->
 %% @private
 handle_info(timeout, #{table := Table} = State) ->
     %% Non-blocking reaping of expired records from table
-    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE, false) of
+    Debug = maps:get(debug, State, false),
+    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE) of
         false ->
+            ?ndbg(Debug, "Not in reaping window", []),
             {noreply, State};
         0 ->
+            ?ndbg(Debug, "Table ~p reaping complete", [Table]),
             {noreply, State};
-        _Cnt ->
+        Cnt ->
+            ?ndbg(Debug, "Table ~p reaped ", [Table, Cnt]),
             {noreply, State, 0}
     catch
         E:M:St ->
@@ -102,12 +113,17 @@ handle_info(timeout, #{table := Table} = State) ->
     end;
 handle_info(poll, #{table := Table, poller := Poller} = State) ->
     %% Non-blocking reaping of expired records from table
-    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE, false) of
+    Debug = maps:get(debug, State, false),
+    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE) of
         false ->
+            ?ndbg(Debug, "Not in reaping window", []),
             {noreply, State#{poller => poll_timer(Poller)}};
         0 ->
+            ?ndbg(Debug, "Table ~p reaping complete", [Table]),
             {noreply, State#{poller => poll_timer(Poller)}};
-        _Cnt ->
+        Cnt ->
+            ?ndbg(Debug, "Table ~p reaped ", [Table, Cnt]),
+            self() ! poll,
             {noreply, State#{poller => poll_timer(Poller)}}
     catch
         E:M:St ->
@@ -140,7 +156,7 @@ poll_timer(TRef, T) when is_reference(TRef) ->
 
 %% @private
 reap_expired_loop_(Table, SegmentSize, Debug, Total) ->
-    case reap_expired_(Table, SegmentSize, Debug) of
+    case reap_expired_(Table, SegmentSize) of
         0 ->
             ?ndbg(Debug, "Reaping completed table ~p : ~w", [Table, Total]),
             ok;
@@ -153,7 +169,7 @@ reap_expired_loop_(Table, SegmentSize, Debug, Total) ->
     end.
 
 %% @private
-reap_expired_(Table, SegmentSize, Debug) ->
+reap_expired_(Table, SegmentSize) ->
     #st{pfx = TabPfx, ttl = Ttl} = St = mfdb_manager:st(Table),
     case Ttl of
         undefined ->

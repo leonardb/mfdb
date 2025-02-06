@@ -125,7 +125,7 @@ handle_info(poll, #{table := Table, poller := Poller} = State) ->
         Cnt ->
             ?ndbg(Debug, "Table ~p reaped ~p", [Table, Cnt]),
             self() ! poll,
-            {noreply, State#{poller => poll_timer(Poller)}}
+            {noreply, State}
     catch
         E:M:St ->
             error_logger:error_msg("poller crash: ~p ~p ~p", [E,M,St]),

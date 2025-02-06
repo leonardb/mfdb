@@ -34,10 +34,11 @@
          code_change/3]).
 
 -include("mfdb.hrl").
+-include_lib("kernel/include/logger.hrl").
 -define(REAP_POLL_INTERVAL, 5000).
 -define(REAP_SEGMENT_SIZE, 200).
 -define(REAP_CALLBACK_PER_PROCESS, 10).
--define(ndbg(Dbg, Fmt, Args), case Dbg of true -> error_logger:info_msg(Fmt, Args); _ -> ok end).
+-define(ndbg(Dbg, Fmt, Args), case Dbg of true -> ?LOG_INFO(Fmt, Args); _ -> ok end).
 
 debug(Table) ->
     gen_server:call(?REAPERPROC(Table), debug).

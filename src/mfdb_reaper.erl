@@ -211,7 +211,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now, Segme
                           end, ok, KVs),
               case LastKey of
                   ok ->
-                      ok;
+                      0;
                   LastKey ->
                       Count = length(KVs),
                       mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),

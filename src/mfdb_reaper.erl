@@ -104,7 +104,7 @@ handle_info(timeout, #{table := Table} = State) ->
             ?ndbg(Debug, "Table ~p reaping complete", [Table]),
             {noreply, State};
         Cnt ->
-            ?ndbg(Debug, "Table ~p reaped ", [Table, Cnt]),
+            ?ndbg(Debug, "Table ~p reaped ~p", [Table, Cnt]),
             {noreply, State, 0}
     catch
         E:M:St ->
@@ -122,7 +122,7 @@ handle_info(poll, #{table := Table, poller := Poller} = State) ->
             ?ndbg(Debug, "Table ~p reaping complete", [Table]),
             {noreply, State#{poller => poll_timer(Poller)}};
         Cnt ->
-            ?ndbg(Debug, "Table ~p reaped ", [Table, Cnt]),
+            ?ndbg(Debug, "Table ~p reaped ~p", [Table, Cnt]),
             self() ! poll,
             {noreply, State#{poller => poll_timer(Poller)}}
     catch

@@ -34,6 +34,13 @@
          code_change/3]).
 
 -include("mfdb.hrl").
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-else.
+-define(debugFmt(F,A), ok).
+-endif.
+
 -include_lib("kernel/include/logger.hrl").
 -define(REAP_POLL_INTERVAL, 5000).
 -define(REAP_SEGMENT_SIZE, 200).
@@ -159,12 +166,15 @@ poll_timer(TRef, T) when is_reference(TRef) ->
 reap_expired_loop_(Table, SegmentSize, Debug, Total) ->
     case reap_expired_(Table, SegmentSize) of
         0 ->
+            ?debugFmt("Reaping completed table ~p : ~w", [Table, Total]),
             ?ndbg(Debug, "Reaping completed table ~p : ~w", [Table, Total]),
             ok;
         ok ->
+            ?debugFmt("Reaping completed table ~p : ~w", [Table, Total]),
             ?ndbg(Debug, "Reaping completed table ~p : ~w", [Table, Total]),
             ok;
         Count ->
+            ?debugFmt("Reaped ~w from table ~p : ~w", [Count, Table, Total + Count]),
             ?ndbg(Debug, "Reaped ~w from table ~p : ~w", [Count, Table, Total + Count]),
             reap_expired_loop_(Table, SegmentSize, Debug, Total + Count)
     end.

@@ -5,9 +5,12 @@
 -record(test_a, {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
 -record(test,   {id :: integer(), value :: binary(), other :: undefined | calendar:datetime()}).
 -record(test_idx, {id :: integer(), value :: integer()}).
+-record(test_field_ttl, {id :: integer(), value :: binary(), expires :: calendar:datetime()}).
 -define(TEST_A, {test_a, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
 -define(TEST_B, {test_b, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
 -define(TEST_IDX, {test_idx, [{id, integer}, {value, integer}]}).
+% -define(TEST_TABLE_TTL, {test_table_ttl, [{id, integer}, {value, binary}, {other, [undefined, datetime]}]}).
+-define(TEST_FIELD_TTL, {test_field_ttl, [{id, integer}, {value, binary}, {expires, datetime}]}).
 -define(APP_KEY, <<"cb136a3d-de40-4a85-bd10-bb23f6f1ec2a">>).
 -define(IS_TX, {erlfdb_transaction, _}).
 
@@ -35,6 +38,7 @@ t_020_test_() -> {timeout, 60, fun() -> parallel_fold_delete2() end}.
 t_021_test_() -> {timeout, 60, fun() -> indexed_select_one() end}.
 t_022_test_() -> {timeout, 60, fun() -> indexed_select_continuation() end}.
 t_023_test_() -> {timeout, 60, fun() -> indexed_fold() end}.
+t_024_test_() -> {timeout, 120, fun() -> field_ttl() end}.
 t_099_test_() -> {timeout, 10, fun() -> stop() end}.
 
 start() ->
@@ -62,6 +66,16 @@ reset_table(test_idx, Count) ->
 create_and_clear_table() ->
     Ok = mfdb:create_table(test_a, [{record, ?TEST_A}]),
     Ok = mfdb:clear_table(test_a),
+    ?assertEqual(ok, Ok).
+
+% create_and_clear_table_ttl() ->
+%     Ok = mfdb:create_table(test_table_ttl, [{record, ?TEST_TABLE_TTL}, {table_ttl, {minutes, 1}}]),
+%     Ok = mfdb:clear_table(test_table_ttl),
+%     ?assertEqual(ok, Ok).
+
+create_and_clear_field_ttl() ->
+    Ok = mfdb:create_table(test_field_ttl, [{record, ?TEST_FIELD_TTL}, {field_ttl, 4}]),
+    Ok = mfdb:clear_table(test_field_ttl),
     ?assertEqual(ok, Ok).
 
 list_tables() ->
@@ -333,6 +347,27 @@ indexed_fold() ->
     FoldFun = fun(#test_idx{id = Id}, Acc) -> [Id | Acc] end,
     D = mfdb:fold(test_idx, FoldFun, [], [{#test_idx{value = '$1', _ = '_'}, [{'>', '$1', 90}, {'<', '$1', 96}], ['$_']}]),
     ?assertEqual([95,94,93,92,91], D).
+
+field_ttl() ->
+    ok = create_and_clear_field_ttl(),
+    %% We want an expiration in the past
+    Expires = mfdb_lib:expires({minutes, -5}),
+    NotExpires = mfdb_lib:expires({minutes, 5}),
+    ?debugFmt("Now: ~p Expires: ~p NotExpires: ~p", [erlang:universaltime(), Expires, NotExpires]),
+    [mfdb:insert(test_field_ttl, #test_field_ttl{id = X, value = integer_to_binary(X, 32), expires = Expires}) || X <- lists:seq(1, 25)],
+    [mfdb:insert(test_field_ttl, #test_field_ttl{id = X, value = integer_to_binary(X, 32), expires = NotExpires}) || X <- lists:seq(26, 50)],
+    {ok, Count} = mfdb:table_info(test_field_ttl, count),
+    ?assertEqual(50, Count),
+    {ok, Pid} = mfdb_reaper:do_reap(test_field_ttl),
+    erlang:monitor(process, Pid),
+    receive
+        {'DOWN', _, _, _, _} ->
+            ok
+    after 5000 ->
+            throw(timeout)
+    end,
+    {ok, Count2} = mfdb:table_info(test_field_ttl, count),
+    ?assertEqual(25, Count2).
 
 recv([], Acc) ->
     Acc;

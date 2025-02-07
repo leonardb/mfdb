@@ -697,7 +697,7 @@ check_field_types([Val | RestVal], [{Field, datetime = Type} | RestFields], TtlP
                 true ->
                     check_field_types(RestVal, RestFields, TtlPos, TtlPos + 1);
                 false ->
-                    {error, {Field, Val, list_to_atom("not_a_" ++ atom_to_list(Type))}}
+                    {error, {Field, Val, list_to_atom("not_" ++ atom_to_list(Type))}}
             end
     end;
 check_field_types([Val | RestVal], [{Field, Type} | RestFields], TtlPos, FPos) ->

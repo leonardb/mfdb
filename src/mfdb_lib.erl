@@ -19,6 +19,7 @@
 
 -export([write/3,
          delete/2,
+         delete/3,
          update/3,
          upsert/3,
          bin_split/1,
@@ -350,11 +351,18 @@ mk_tx(#st{db = ?IS_DB = Db} = St) ->
     FdbTx = erlfdb:create_transaction(Db),
     St#st{db = FdbTx, write_lock = false}.
 
--spec delete(#st{}, any()) -> ok.
-delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
+
+-spec delete(#st{}, any()) -> ok | {error, atom()}.
+delete(OldSt, PkValue) ->
+    delete(OldSt, PkValue, false).
+
+-spec delete(#st{}, any(), boolean()) -> ok | {error, atom()}.
+delete(#st{db = ?IS_DB} = OldSt, PkValue, ReturnNotExists) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
-    case delete(NewSt, PkValue) of
+    case delete(NewSt, PkValue, ReturnNotExists) of
+        {error, not_found} when ReturnNotExists ->
+            {error, not_found};
         {error, not_found} ->
             ok;
         ok ->
@@ -364,10 +372,16 @@ delete(#st{db = ?IS_DB} = OldSt, PkValue) ->
                     ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
                     ErrAtom = mfdb_lib:fdb_err(ErrCode),
                     wait(erlfdb:cancel(FdbTx)),
-                    {error, ErrAtom}
+                    case ErrAtom of
+                        not_committed ->
+                            %% delete conflict, so retry
+                            delete(OldSt, PkValue, ReturnNotExists);
+                        _ ->
+                            {error, ErrAtom}
+                    end
             end
     end;
-delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue) ->
+delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNotExists) ->
     %% deleting a data item
     EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
     ok = wait(erlfdb:add_read_conflict_key(Tx, EncKey)),

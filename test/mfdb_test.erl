@@ -173,9 +173,9 @@ import_from_terms_file() ->
 check_field_types() ->
     ok = mfdb:clear_table(test_a),
     Error0 = mfdb:insert(test_a, #test_a{id = <<"one">>}),
-    ?assertEqual({error,{id,<<"one">>,not_a_integer}}, Error0),
+    ?assertEqual({error,{id,<<"one">>,not_integer}}, Error0),
     Error1 = mfdb:insert(test_a, #test_a{id = 1, value = name_atom}),
-    ?assertEqual({error,{value,name_atom,not_a_binary}}, Error1),
+    ?assertEqual({error,{value,name_atom,not_binary}}, Error1),
     Error2 = mfdb:insert(test_a, #test{id = 1, value = <<"value">>}),
     ?assertEqual({error,invalid_record}, Error2).
 
@@ -225,8 +225,8 @@ parallel_fold_delete() ->
     {ok, TabCnt} = mfdb:table_info(test_a, count),
     ?assertEqual(500, TabCnt),
     FoldDeleteFun =
-        fun(#test_a{id = Id}, Acc) ->
-                try ok = mfdb:delete(test_a, Id),
+        fun(Tx, #test_a{id = Id}, Acc) ->
+                try ok = mfdb:delete(Tx, Id),
                      Acc + 1
                 catch
                     _E:_M:_Stack ->
@@ -260,11 +260,14 @@ parallel_fold_delete2() ->
     RecIds =  mfdb:fold(test_a, FoldDeleteFun, []),
 
     DeleteFun = fun(X) -> Self ! {X, lists:foldl(fun(Id, Acc) ->
-                                                         try ok = mfdb:delete(test_a, Id),
-                                                              Acc + 1
+                                                         try mfdb:delete_if_exists(test_a, Id) of
+                                                            ok ->
+                                                              Acc + 1;
+                                                            {error, not_found} ->
+                                                              Acc
                                                          catch
                                                              _E:_M:_Stack ->
-                                                                 %% error_logger:error_msg("Skipped ~p because ~p", [Id, {E,M,Stack}]),
+                                                                ?debugFmt("Skipped ~p because ~p", [Id, {_E,_M,_Stack}]),
                                                                  Acc
                                                          end
                                                  end, 0, RecIds)} end,

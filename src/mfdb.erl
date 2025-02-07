@@ -35,6 +35,7 @@
 -export([update/3]).
 -export([upsert/3]).
 -export([delete/2]).
+-export([delete_if_exists/2]).
 
 -export([init_counter/3,
          set_counter/3,
@@ -397,9 +398,17 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
 -spec delete(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->  ok | {error, atom()}.
 delete(Table, PkValue) when is_atom(Table) ->
     #st{} = St = mfdb_manager:st(Table),
-    mfdb_lib:delete(St, PkValue);
+    mfdb_lib:delete(St, PkValue, false);
 delete(#st{} = Tx, PkValue) ->
-    mfdb_lib:delete(Tx, PkValue).
+    mfdb_lib:delete(Tx, PkValue, false).
+
+%% @doc Delete a record from the table
+-spec delete_if_exists(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->  ok | {error, atom()}.
+delete_if_exists(Table, PkValue) when is_atom(Table) ->
+    #st{} = St = mfdb_manager:st(Table),
+    mfdb_lib:delete(St, PkValue, true);
+delete_if_exists(#st{} = Tx, PkValue) ->
+    mfdb_lib:delete(Tx, PkValue, true).
 
 -spec subscribe(Table :: table_name(), Key :: any(), ReplyType :: watcher_option()) -> ok | {error, invalid_reply | no_such_table | {any(), any()}}.
 subscribe(Table, Key, ReplyType) when is_atom(Table) ->
@@ -1365,7 +1374,7 @@ do_import_(Table, SourceFile, ImportId, Overwrite) ->
         end,
     case file:open(SourceFile, [read]) of
         {ok, Fd} ->
-            R = consult_stream(Fd, Fname, ImportFun),
+            {ok, R} = consult_stream(Fd, Fname, ImportFun),
             _ = file:close(Fd),
             exit({normal, {ImportId, {ok, R}}});
         Error ->
@@ -1400,7 +1409,7 @@ consult_stream(Fd, Line, Fname, Fun, Acc0, Cnt) ->
             Pids = [spawn(fun() -> Fun(Self, X) end) || X <- Acc0],
             L = length(Pids),
             rev_import_results(Fname, L, L, 0),
-            ok
+            {ok, L}
     end.
 
 rev_import_results(Fname, Tot, 0, Added) ->

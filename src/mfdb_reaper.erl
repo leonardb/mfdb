@@ -215,7 +215,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, Now, Segme
                                               _E:_M:_Stack ->
                                                   LastKey
                                           end;
-                                      _ ->
+                                      _Val ->
                                           LastKey
                                   end
                           end, ok, KVs),

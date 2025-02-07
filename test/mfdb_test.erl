@@ -353,11 +353,12 @@ field_ttl() ->
     %% We want an expiration in the past
     Expires = mfdb_lib:expires({minutes, -5}),
     NotExpires = mfdb_lib:expires({minutes, 5}),
-    ?debugFmt("Now: ~p Expires: ~p NotExpires: ~p", [erlang:universaltime(), Expires, NotExpires]),
-    [mfdb:insert(test_field_ttl, #test_field_ttl{id = X, value = integer_to_binary(X, 32), expires = Expires}) || X <- lists:seq(1, 25)],
-    [mfdb:insert(test_field_ttl, #test_field_ttl{id = X, value = integer_to_binary(X, 32), expires = NotExpires}) || X <- lists:seq(26, 50)],
+    %% ?debugFmt("Now: ~p Expires: ~p NotExpires: ~p", [erlang:universaltime(), Expires, NotExpires]),
+    [mfdb:insert(test_field_ttl, #test_field_ttl{id = X, value = integer_to_binary(X, 32), expires = NotExpires}) || X <- lists:seq(1, 10)],
+    [mfdb:insert(test_field_ttl, #test_field_ttl{id = X, value = integer_to_binary(X, 32), expires = Expires}) || X <- lists:seq(11, 20)],
+    [mfdb:insert(test_field_ttl, #test_field_ttl{id = X, value = integer_to_binary(X, 32), expires = NotExpires}) || X <- lists:seq(21, 30)],
     {ok, Count} = mfdb:table_info(test_field_ttl, count),
-    ?assertEqual(50, Count),
+    ?assertEqual(30, Count),
     {ok, Pid} = mfdb_reaper:do_reap(test_field_ttl),
     erlang:monitor(process, Pid),
     receive
@@ -367,7 +368,8 @@ field_ttl() ->
             throw(timeout)
     end,
     {ok, Count2} = mfdb:table_info(test_field_ttl, count),
-    ?assertEqual(25, Count2).
+    ?assertEqual(20, Count2),
+    ?assertEqual(20, mfdb:fold(test_field_ttl, fun(_,C) -> C + 1 end, 0)).
 
 recv([], Acc) ->
     Acc;

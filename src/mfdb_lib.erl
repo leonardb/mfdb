@@ -372,13 +372,14 @@ delete(#st{db = ?IS_DB} = OldSt, PkValue, ReturnNotExists) ->
                     ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
                     ErrAtom = mfdb_lib:fdb_err(ErrCode),
                     wait(erlfdb:cancel(FdbTx)),
-                    case ErrAtom of
-                        not_committed ->
-                            %% delete conflict, so retry
-                            delete(OldSt, PkValue, ReturnNotExists);
-                        _ ->
-                            {error, ErrAtom}
-                    end
+                    % case ErrAtom of
+                    %     not_committed ->
+                    %         %% delete conflict, so retry
+                    %         delete(OldSt, PkValue, ReturnNotExists);
+                    %     _ ->
+                    %         {error, ErrAtom}
+                    % end,
+                    {error, ErrAtom}
             end
     end;
 delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNotExists) ->

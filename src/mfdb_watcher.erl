@@ -140,6 +140,8 @@ handle_cast(updated, #watcher_state{db = Db, table = Tab0,
                     {updated, Val}
             end,
     NState = case Event of
+                noop ->
+                    State;
                  deleted ->
                      %% Key was touched and no longer exists
                      notify_(Watchers, {Table, Key, deleted}),

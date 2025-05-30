@@ -128,7 +128,7 @@
          write_lock     = false         :: boolean(),
          counters       = #{}           :: #{binary() => integer()} %% Map #{<<"counter key">> => integer(shard count)}
         }).
-
+%% rd(st, {tab,key_id,alias,record_name,fields,index,db,table_id,pfx,hca_ref,info,ttl,write_lock,counters}).
 -type st() :: #st{}.
 
 -record(info, {k, v}).

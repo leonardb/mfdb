@@ -406,6 +406,7 @@ delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNot
                 ok = wait(remove_any_indexes_(Tx, TabPfx, PkValue, binary_to_term(EncRecord), Indexes)),
                 {OldSize * -1, -1}
         end,
+    ok = wait(erlfdb:clear(Tx, EncKey)),
     case {IncSize, IncCount} of
         {0, 0} ->
             {error, not_found};
@@ -413,8 +414,7 @@ delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNot
             %% decrement size
             wait(inc_counter_(Tx, TabPfx, ?TABLE_SIZE_PREFIX, IncSize)),
             %% decrement item count
-            wait(inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, IncCount)),
-            ok = wait(erlfdb:clear(Tx, EncKey))
+            wait(inc_counter_(Tx, TabPfx, ?TABLE_COUNT_PREFIX, IncCount))
     end.
 
 remove_any_indexes_(Tx, TabPfx, PkValue, Record, Indexes) when is_tuple(Indexes) ->

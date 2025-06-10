@@ -212,6 +212,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTsta
                                               %% Key2Ttl have to be removed individually (now done in mfdb_lib:delete/2)
                                               %%TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
                                               %%ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
+                                              mfdb_lib:wait(erlfdb:clear(Tx, EncKey)),
                                               EncKey
                                           catch
                                               _E:_M:_Stack ->
@@ -226,7 +227,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTsta
                       0;
                   LastKey ->
                       Count = length(KVs),
-                      mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
+                      %% mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
                       Count
               end
       end).

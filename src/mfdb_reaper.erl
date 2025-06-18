@@ -213,6 +213,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTsta
                                               %%TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
                                               %%ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
                                               mfdb_lib:wait(erlfdb:clear(Tx, EncKey)),
+                                              mfdb_lib:wait(erlfdb:commit(Tx)),
                                               EncKey
                                           catch
                                               _E:_M:_Stack ->

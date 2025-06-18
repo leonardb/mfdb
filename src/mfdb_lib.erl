@@ -357,30 +357,27 @@ delete(OldSt, PkValue) ->
     delete(OldSt, PkValue, false).
 
 -spec delete(#st{}, any(), boolean()) -> ok | {error, atom()}.
-delete(#st{db = ?IS_DB} = OldSt, PkValue, ReturnNotExists) ->
+delete(#st{db = ?IS_DB, tab = Tab} = OldSt, PkValue, ReturnNotExists) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
-    case delete(NewSt, PkValue, ReturnNotExists) of
+    Resp = case delete(NewSt, PkValue, ReturnNotExists) of
         {error, not_found} when ReturnNotExists ->
             {error, not_found};
         {error, not_found} ->
             ok;
         ok ->
-            try wait(erlfdb:commit(FdbTx))
-            catch
-                error:{erlfdb_error, ErrCode} ->
-                    ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
-                    ErrAtom = mfdb_lib:fdb_err(ErrCode),
-                    wait(erlfdb:cancel(FdbTx)),
-                    % case ErrAtom of
-                    %     not_committed ->
-                    %         %% delete conflict, so retry
-                    %         delete(OldSt, PkValue, ReturnNotExists);
-                    %     _ ->
-                    %         {error, ErrAtom}
-                    % end,
-                    {error, ErrAtom}
-            end
+            ok
+    end,
+    try wait(erlfdb:commit(FdbTx)) of
+        ok ->
+            Resp
+    catch
+        error:{erlfdb_error, ErrCode} ->
+            ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
+            ErrAtom = mfdb_lib:fdb_err(ErrCode),
+            wait(erlfdb:cancel(FdbTx)),
+            error_logger:error_msg("Delete failed: ~p ~p ~p", [Tab, PkValue, ErrAtom]),
+            delete(OldSt, PkValue, ReturnNotExists)
     end;
 delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNotExists) ->
     %% deleting a data item

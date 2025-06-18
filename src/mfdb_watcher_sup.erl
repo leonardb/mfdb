@@ -29,12 +29,10 @@ init([]) ->
 -spec create(Table :: binary(), Prefix :: binary(), Key :: binary()) -> ok.
 create(Table, Prefix, Key) ->
     Name = {mfdb_watcher, {Table, Prefix, Key}},
-    Spec = {Name,
-            {mfdb_watcher, start_link, [Table, Prefix, Key]},
-            transient,
-            5000,
-            worker,
-            [mfdb_watcher]},
+    Spec =
+        {Name, {mfdb_watcher, start_link, [Table, Prefix, Key]}, transient, 5000, worker, [
+            mfdb_watcher
+        ]},
     case supervisor:start_child(?MODULE, Spec) of
         {ok, _} ->
             ok;

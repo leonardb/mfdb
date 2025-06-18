@@ -24,16 +24,10 @@ start_link(Table) ->
     supervisor:start_link(?MODULE, [Table]).
 
 init([Table]) ->
-    TableSpec = {{mfdb, Table},
-                 {mfdb, start_link, [Table]},
-                 transient,
-                 5000,
-                 worker,
-                 [mfdb]},
-    ReaperSpec = {{mfdb_reaper, Table},
-                  {mfdb_reaper, start_link, [Table]},
-                  transient,
-                  5000,
-                  worker,
-                  [mfdb_reaper]},
-    {ok, { {one_for_all, 5, 10}, [TableSpec, ReaperSpec]} }.
+    TableSpec = {{mfdb, Table}, {mfdb, start_link, [Table]}, transient, 5000, worker, [mfdb]},
+    ReaperSpec = {
+        {mfdb_reaper, Table}, {mfdb_reaper, start_link, [Table]}, transient, 5000, worker, [
+            mfdb_reaper
+        ]
+    },
+    {ok, {{one_for_all, 5, 10}, [TableSpec, ReaperSpec]}}.

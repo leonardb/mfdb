@@ -17,8 +17,10 @@
 -behaviour(supervisor).
 
 %% API
--export([add/1,
-         remove/1]).
+-export([
+    add/1,
+    remove/1
+]).
 
 %% Supervisor
 -export([start_link/0]).
@@ -29,12 +31,8 @@
 -spec add(table_name()) -> ok.
 add(Table) ->
     Id = {mfdb_table_sup, Table},
-    Spec = {Id,
-            {mfdb_table_sup, start_link, [Table]},
-            transient,
-            5000,
-            supervisor,
-            [mfdb_table_sup]},
+    Spec =
+        {Id, {mfdb_table_sup, start_link, [Table]}, transient, 5000, supervisor, [mfdb_table_sup]},
     case supervisor:start_child(?MODULE, Spec) of
         {ok, _Pid} ->
             ok;
@@ -67,4 +65,4 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
-    {ok, { {one_for_one, 5, 10}, []} }.
+    {ok, {{one_for_one, 5, 10}, []}}.

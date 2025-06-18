@@ -19,13 +19,15 @@
 
 -export([st/1]).
 
--export([start_link/0,
-         init/1,
-         handle_call/3,
-         handle_cast/2,
-         handle_info/2,
-         terminate/2,
-         code_change/3]).
+-export([
+    start_link/0,
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -export([create_key_/0]).
 -export([update_counters/1]).
@@ -81,7 +83,8 @@ handle_call({delete_table, Tab0}, _From, S) ->
     R = delete_table_(Tab0),
     {reply, R, S};
 handle_call({create_table, Table, Options}, _From, S) ->
-    R = case lists:keyfind(record, 1, Options) of
+    R =
+        case lists:keyfind(record, 1, Options) of
             {record, Record} ->
                 {ok, Indexes} = indexes_(Options),
                 case ttl_(Options, Record) of
@@ -105,10 +108,13 @@ handle_call(table_list, _From, S) ->
         KeyId ->
             TablesPfx = sext:prefix({KeyId, <<"table">>, ?FDB_WC}),
             Tables0 = erlfdb:get_range_startswith(Db, TablesPfx),
-            Tables = [begin
-                          #st{tab = Table} = convert_table_rec(Db, TabKey, TabEnc),
-                          binary_to_atom(Table)
-                      end || {TabKey, TabEnc} <- Tables0],
+            Tables = [
+                begin
+                    #st{tab = Table} = convert_table_rec(Db, TabKey, TabEnc),
+                    binary_to_atom(Table)
+                end
+             || {TabKey, TabEnc} <- Tables0
+            ],
             {reply, {ok, Tables}, S}
     end;
 handle_call(_, _, S) ->
@@ -139,9 +145,10 @@ ttl_(Options, {_, Fields}) ->
     FieldTtl =
         case proplists:get_value(field_ttl, Options, undefined) of
             TtlFieldPos when
-                  is_integer(TtlFieldPos) andalso
-                  TtlFieldPos > 2 andalso
-                  TtlFieldPos =< MaxFieldIdx ->
+                is_integer(TtlFieldPos) andalso
+                    TtlFieldPos > 2 andalso
+                    TtlFieldPos =< MaxFieldIdx
+            ->
                 %% Make sure field at position X is typed as a datetime
                 case lists:nth(TtlFieldPos - 1, Fields) of
                     {_FName, Types} when is_list(Types) ->
@@ -216,7 +223,7 @@ load_table_(Tab) ->
             end;
         #st{} = St ->
             %% table already loaded
-            io:format("~p~n",[St]),
+            io:format("~p~n", [St]),
             ok
     end.
 
@@ -230,10 +237,11 @@ update_counters(#st{db = Db, tab = Tab, counters = Counters}) ->
             NTabSt0 = binary_to_term(EncSt),
             NTabSt = NTabSt0#st{counters = Counters},
             erlfdb:transactional(
-              Db,
-              fun(Tx) ->
-                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
-              end),
+                Db,
+                fun(Tx) ->
+                    erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+                end
+            ),
             ok = persistent_term:put({mfdb, Tab}, NTabSt)
     end.
 
@@ -242,14 +250,22 @@ create_table_(Tab, Record0, Indexes, Ttl) when is_binary(Tab) ->
     Db = mfdb_conn:connection(Conn),
     %% Functions must return 'ok' to continue, anything else will exit early
     Record = record_(Record0),
-    Flow = [{fun mfdb_lib:validate_record/1, [Record]},
-            {fun mfdb_lib:validate_indexes/2, [Indexes, Record]},
-            {fun table_create_if_not_exists_/6, [Db, KeyId, Tab, Record, Indexes, Ttl]}],
+    Flow = [
+        {fun mfdb_lib:validate_record/1, [Record]},
+        {fun mfdb_lib:validate_indexes/2, [Indexes, Record]},
+        {fun table_create_if_not_exists_/6, [Db, KeyId, Tab, Record, Indexes, Ttl]}
+    ],
     mfdb_lib:flow(Flow, ok).
 
 %% Set any unspecified fields as 'any' type
 record_({RName, Fields}) ->
-    {RName, [case F0 of {_, _} = F -> F; F -> {F, any} end || F0 <- Fields]}.
+    {RName, [
+        case F0 of
+            {_, _} = F -> F;
+            F -> {F, any}
+        end
+     || F0 <- Fields
+    ]}.
 
 table_exists_(Db, TabKey) ->
     %% Does a table config exist
@@ -257,39 +273,44 @@ table_exists_(Db, TabKey) ->
 
 table_create_if_not_exists_(Db, KeyId, Table, Record, Indexes, Ttl) ->
     TabKey = sext:encode({KeyId, <<"table">>, Table}),
-    TableSt = case table_exists_(Db, TabKey) of
-                  false ->
-                      Hca = erlfdb_hca:create(<<"hca_table">>),
-                      TableId = erlfdb_hca:allocate(Hca, Db),
-                      #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes, Ttl),
-                      ok = erlfdb:set(Db, TabKey, term_to_binary(TableSt0)),
-                      TableSt0;
-                  true ->
-                      %% Read table spec from DB
-                      StBin = erlfdb:get(Db, TabKey),
-                      binary_to_term(StBin)
-              end,
+    TableSt =
+        case table_exists_(Db, TabKey) of
+            false ->
+                Hca = erlfdb_hca:create(<<"hca_table">>),
+                TableId = erlfdb_hca:allocate(Hca, Db),
+                #st{} = TableSt0 = mk_tab_(Db, KeyId, TableId, Table, Record, Indexes, Ttl),
+                ok = erlfdb:set(Db, TabKey, term_to_binary(TableSt0)),
+                TableSt0;
+            true ->
+                %% Read table spec from DB
+                StBin = erlfdb:get(Db, TabKey),
+                binary_to_term(StBin)
+        end,
     ok = persistent_term:put({mfdb, Table}, TableSt#st{db = Db}),
     ok = mfdb_tables_sup:add(binary_to_atom(Table)).
 
 mk_tab_(Db, KeyId, TableId, Table, {RecordName, Fields}, Indexes, Ttl) ->
     HcaRef = erlfdb_hca:create(<<TableId/binary, "_hca_ref">>),
-    Pfx = <<(byte_size(KeyId) + byte_size(TableId) + 2),
-            (byte_size(KeyId)), KeyId/binary,
-            (byte_size(TableId)), TableId/binary>>,
+    Pfx = <<
+        (byte_size(KeyId) + byte_size(TableId) + 2),
+        (byte_size(KeyId)),
+        KeyId/binary,
+        (byte_size(TableId)),
+        TableId/binary
+    >>,
     St0 = #st{
-             tab         = Table,
-             key_id      = KeyId,
-             record_name = RecordName,
-             fields      = Fields,
-             index       = erlang:make_tuple(length(Fields) + 1, undefined),
-             db          = Db,
-             table_id    = TableId,
-             hca_ref     = HcaRef,
-             pfx         = Pfx,
-             info        = [],
-             ttl         = Ttl
-            },
+        tab = Table,
+        key_id = KeyId,
+        record_name = RecordName,
+        fields = Fields,
+        index = erlang:make_tuple(length(Fields) + 1, undefined),
+        db = Db,
+        table_id = TableId,
+        hca_ref = HcaRef,
+        pfx = Pfx,
+        info = [],
+        ttl = Ttl
+    },
     %% Convert indexes to records and add to the table state
     create_indexes_(Indexes, St0).
 
@@ -298,58 +319,63 @@ create_indexes_([], #st{} = St) ->
 create_indexes_([Pos | Rest], #st{db = Db, index = Index0} = St) ->
     IdxTableHca = erlfdb_hca:create(<<"hca_table">>),
     HcaId = erlfdb_hca:allocate(IdxTableHca, Db),
-    Index = #idx{pos = Pos,
-                 hca_id = HcaId,
-                 data_key = <<?IDX_DATA_PREFIX/binary, HcaId/binary>>,
-                 count_key = <<?IDX_COUNT_PREFIX/binary, HcaId/binary>>},
+    Index = #idx{
+        pos = Pos,
+        hca_id = HcaId,
+        data_key = <<?IDX_DATA_PREFIX/binary, HcaId/binary>>,
+        count_key = <<?IDX_COUNT_PREFIX/binary, HcaId/binary>>
+    },
     create_indexes_(Rest, St#st{index = setelement(Pos, Index0, Index)}).
 
 convert_table_rec(Db, TabKey, TabEnc) ->
     case binary_to_term(TabEnc) of
         #st{} = St ->
             St;
-%%        {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
-%%         Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
-%%            NTabSt = #st{tab = Tab,
-%%                         key_id = KeyId0,
-%%                         alias = Alias,
-%%                         record_name = RecordName,
-%%                         fields = Fields,
-%%                         index = Index,
-%%                         db = Db0,
-%%                         table_id = TableId,
-%%                         pfx = Pfx,
-%%                         hca_ref = HcaRef,
-%%                         info = Info,
-%%                         ttl = Ttl,
-%%                         write_lock = WriteLock},
-%%            erlfdb:transactional(
-%%              Db,
-%%              fun(Tx) ->
-%%                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
-%%              end),
-%%            NTabSt;
-        {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
-         Db0, TableId, Pfx, HcaRef, Info, Ttl, WriteLock} ->
-            NTabSt = #st{tab = Tab,
-                         key_id = KeyId0,
-                         alias = Alias,
-                         record_name = RecordName,
-                         fields = Fields,
-                         index = Index,
-                         db = Db0,
-                         table_id = TableId,
-                         pfx = Pfx,
-                         hca_ref = HcaRef,
-                         info = Info,
-                         ttl = Ttl,
-                         write_lock = mfdb_lib:to_bool(WriteLock),
-                         counters = #{}},
+        %%        {st, Tab, KeyId0, Alias, RecordName, Fields, Index,
+        %%         Db0, TableId, Pfx, HcaRef, Info, Ttl, _TtlCb, WriteLock} ->
+        %%            NTabSt = #st{tab = Tab,
+        %%                         key_id = KeyId0,
+        %%                         alias = Alias,
+        %%                         record_name = RecordName,
+        %%                         fields = Fields,
+        %%                         index = Index,
+        %%                         db = Db0,
+        %%                         table_id = TableId,
+        %%                         pfx = Pfx,
+        %%                         hca_ref = HcaRef,
+        %%                         info = Info,
+        %%                         ttl = Ttl,
+        %%                         write_lock = WriteLock},
+        %%            erlfdb:transactional(
+        %%              Db,
+        %%              fun(Tx) ->
+        %%                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+        %%              end),
+        %%            NTabSt;
+        {st, Tab, KeyId0, Alias, RecordName, Fields, Index, Db0, TableId, Pfx, HcaRef, Info, Ttl,
+            WriteLock} ->
+            NTabSt = #st{
+                tab = Tab,
+                key_id = KeyId0,
+                alias = Alias,
+                record_name = RecordName,
+                fields = Fields,
+                index = Index,
+                db = Db0,
+                table_id = TableId,
+                pfx = Pfx,
+                hca_ref = HcaRef,
+                info = Info,
+                ttl = Ttl,
+                write_lock = mfdb_lib:to_bool(WriteLock),
+                counters = #{}
+            },
             erlfdb:transactional(
-              Db,
-              fun(Tx) ->
-                      erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
-              end),
+                Db,
+                fun(Tx) ->
+                    erlfdb:set(Tx, TabKey, term_to_binary(NTabSt))
+                end
+            ),
             NTabSt;
         Other ->
             Other

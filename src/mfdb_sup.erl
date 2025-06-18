@@ -39,12 +39,15 @@ start_link() ->
 init([]) ->
     %% This is a bit of a kludge since mfdb may be included by
     %% another application but not actually have a cluster defined
-    Children = case application:get_env(mfdb, cluster, undefined) of
-                   undefined ->
-                       [];
-                   _ ->
-                       [?CHILD(mfdb_tables_sup, supervisor),
-                        ?CHILD(mfdb_watcher_sup, supervisor),
-                        ?CHILD(mfdb_manager, worker)]
-               end,
-    {ok, { {one_for_all, 5, 10}, Children} }.
+    Children =
+        case application:get_env(mfdb, cluster, undefined) of
+            undefined ->
+                [];
+            _ ->
+                [
+                    ?CHILD(mfdb_tables_sup, supervisor),
+                    ?CHILD(mfdb_watcher_sup, supervisor),
+                    ?CHILD(mfdb_manager, worker)
+                ]
+        end,
+    {ok, {{one_for_all, 5, 10}, Children}}.

@@ -21,15 +21,19 @@
 -behaviour(gen_server).
 
 %% API
--export([connect/1,
-         connect/2]).
+-export([
+    connect/1,
+    connect/2
+]).
 
--export([create_table/2,
-         delete_table/1,
-         clear_table/1,
-         table_info/2,
-         table_list/0,
-         import/2]).
+-export([
+    create_table/2,
+    delete_table/1,
+    clear_table/1,
+    table_info/2,
+    table_list/0,
+    import/2
+]).
 
 -export([insert/2]).
 -export([update/3]).
@@ -37,24 +41,32 @@
 -export([delete/2]).
 -export([delete_if_exists/2]).
 
--export([init_counter/3,
-         set_counter/3,
-         update_counter/3,
-         delete_counter/2,
-         read_counter/2]).
+-export([
+    init_counter/3,
+    set_counter/3,
+    update_counter/3,
+    delete_counter/2,
+    read_counter/2
+]).
 
 -export([lookup/2]).
 
--export([select/2,
-         select/1]).
+-export([
+    select/2,
+    select/1
+]).
 
 -export([index_read/3]).
 
--export([fold/3,
-         fold/4]).
+-export([
+    fold/3,
+    fold/4
+]).
 
--export([subscribe/3,
-         unsubscribe/2]).
+-export([
+    subscribe/3,
+    unsubscribe/2
+]).
 
 -export([status/0]).
 
@@ -63,13 +75,15 @@
 -export([do_import_/4]).
 
 %% gen_server API
--export([start_link/1,
-         init/1,
-         handle_call/3,
-         handle_cast/2,
-         handle_info/2,
-         terminate/2,
-         code_change/3]).
+-export([
+    start_link/1,
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -include("mfdb.hrl").
 
@@ -115,7 +129,8 @@ delete_table(Table) when is_atom(Table) ->
 %% @doc Delete all records from a table
 -spec clear_table(Table :: table_name()) -> ok | {error, not_connected}.
 clear_table(Table) when is_atom(Table) ->
-    try gen_server:call(?TABPROC(Table), clear_table, infinity)
+    try
+        gen_server:call(?TABPROC(Table), clear_table, infinity)
     catch
         exit:{noproc, _}:_Stack ->
             {error, not_connected}
@@ -126,7 +141,8 @@ clear_table(Table) when is_atom(Table) ->
 %% @end
 -spec import(Table :: table_name(), SourceFile :: list()) -> ok | {error, not_connected}.
 import(Table, SourceFile) when is_atom(Table) ->
-    try gen_server:call(?TABPROC(Table), {import, SourceFile}, infinity)
+    try
+        gen_server:call(?TABPROC(Table), {import, SourceFile}, infinity)
     catch
         exit:{noproc, _}:_Stack ->
             {error, not_connected}
@@ -134,17 +150,19 @@ import(Table, SourceFile) when is_atom(Table) ->
 
 %% @doc get info about a table
 -spec table_info(Table :: table_name(), InfoOpt :: info_opt()) ->
-          {ok, integer() | list({count | size, integer()})} | {error, not_connected}.
-table_info(Table, InfoOpt)
-  when is_atom(Table) andalso
-       (InfoOpt =:= all orelse
-        InfoOpt =:= size orelse
-        InfoOpt =:= count orelse
-        InfoOpt =:= fields orelse
-        InfoOpt =:= indexes orelse
-        InfoOpt =:= ttl orelse
-        InfoOpt =:= ttl_callback) ->
-    try gen_server:call(?TABPROC(Table), {table_info, InfoOpt})
+    {ok, integer() | list({count | size, integer()})} | {error, not_connected}.
+table_info(Table, InfoOpt) when
+    is_atom(Table) andalso
+        (InfoOpt =:= all orelse
+            InfoOpt =:= size orelse
+            InfoOpt =:= count orelse
+            InfoOpt =:= fields orelse
+            InfoOpt =:= indexes orelse
+            InfoOpt =:= ttl orelse
+            InfoOpt =:= ttl_callback)
+->
+    try
+        gen_server:call(?TABPROC(Table), {table_info, InfoOpt})
     catch
         exit:{noproc, _}:_Stack ->
             {error, not_connected}
@@ -159,7 +177,8 @@ table_list() ->
 %% A mnesia-style select returning a continuation()
 %% Returns are chunked into buckets of 50 results
 %% @end
--spec select(Table :: table_name(), Matchspec :: ets:match_spec()) ->  {[] | list(any()), continuation() | '$end_of_table'}.
+-spec select(Table :: table_name(), Matchspec :: ets:match_spec()) ->
+    {[] | list(any()), continuation() | '$end_of_table'}.
 select(Table, Matchspec) when is_atom(Table) ->
     select_(Table, Matchspec, 50).
 
@@ -183,19 +202,21 @@ lookup(Table, PkValue) when is_atom(Table) ->
     #st{db = Db, pfx = TblPfx} = mfdb_manager:st(Table),
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
     erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
-                  not_found ->
-                      {error, not_found};
-                  EncVal ->
-                      DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
-                      {ok, DecodedVal}
-              end
-      end).
+        Db,
+        fun(Tx) ->
+            case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
+                not_found ->
+                    {error, not_found};
+                EncVal ->
+                    DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
+                    {ok, DecodedVal}
+            end
+        end
+    ).
 
 %% @doc Look up records with specific index value and returns any matching objects
--spec index_read(Table :: table_name(), IdxValue :: any(), IdxPosition :: pos_integer()) -> [] | [dbrec()] | {error, no_index_on_field}.
+-spec index_read(Table :: table_name(), IdxValue :: any(), IdxPosition :: pos_integer()) ->
+    [] | [dbrec()] | {error, no_index_on_field}.
 index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
     #st{index = Indexes, record_name = RName, fields = Fields} = mfdb_manager:st(Table),
     case element(IdxPosition, Indexes) of
@@ -215,87 +236,105 @@ index_read(Table, IdxValue, IdxPosition) when is_atom(Table) ->
 insert(Table, DbRecord) when is_atom(Table) andalso is_tuple(DbRecord) ->
     #st{} = St = mfdb_manager:st(Table),
     insert(St, DbRecord);
-insert(#st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St, DbRecord)
-  when is_tuple(DbRecord) ->
+insert(#st{record_name = RecName, fields = Fields, index = Index, ttl = Ttl} = St, DbRecord) when
+    is_tuple(DbRecord)
+->
     Flow = mk_insert_flow_(St, RecName, Fields, Index, Ttl, DbRecord),
     mfdb_lib:flow(Flow, true).
 
 %% @private
 mk_insert_flow_(StOrTx, RecName, Fields, Index, Ttl, ObjectTuple) ->
-    TtlPos = case Ttl of
-                 {field, Pos} -> Pos;
-                 _ -> -1
-             end,
+    TtlPos =
+        case Ttl of
+            {field, Pos} -> Pos;
+            _ -> -1
+        end,
     IndexList = tl(tuple_to_list(Index)),
     ExpectLength = length(Fields) + 1,
-    TypeCheckFun = case lists:all(fun(F) -> is_atom(F) end, Fields) of
-                       true ->
-                           fun(_,_,_) -> true end;
-                       false ->
-                           fun mfdb_lib:check_field_types/3
-                   end,
-    IndexCheckFun = case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
-                        true ->
-                            fun(_,_) -> true end;
-                        false ->
-                            fun mfdb_lib:check_index_sizes/2
-                    end,
+    TypeCheckFun =
+        case lists:all(fun(F) -> is_atom(F) end, Fields) of
+            true ->
+                fun(_, _, _) -> true end;
+            false ->
+                fun mfdb_lib:check_field_types/3
+        end,
+    IndexCheckFun =
+        case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
+            true ->
+                fun(_, _) -> true end;
+            false ->
+                fun mfdb_lib:check_index_sizes/2
+        end,
     [RName | ObjectList] = tuple_to_list(ObjectTuple),
     [RKey | _] = ObjectList,
     InRec = {RName, size(ObjectTuple)},
     Expect = {RecName, ExpectLength},
     %% Functions must return 'true' to continue, anything else will exit early
-    [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
-     {TypeCheckFun, [ObjectList, Fields, TtlPos]},
-     {IndexCheckFun, [ObjectList, IndexList]},
-     {fun mfdb_lib:write/3, [StOrTx, RKey, ObjectTuple]}].
+    [
+        {fun(X, Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
+        {TypeCheckFun, [ObjectList, Fields, TtlPos]},
+        {IndexCheckFun, [ObjectList, IndexList]},
+        {fun mfdb_lib:write/3, [StOrTx, RKey, ObjectTuple]}
+    ].
 
 %% @doc Update an existing record
 %% Changes can be a list of field changes or a 1-arity function which returns {ok, NewRecord} of the same record type
--spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) -> ok | {error, not_found | mismatched_record}.
-update(Table, Key, Changes)
-  when is_atom(Table) andalso
-       is_list(Changes)  ->
+-spec update(TableOrTx :: table_name() | st(), Key :: any(), Changes :: field_changes()) ->
+    ok | {error, not_found | mismatched_record}.
+update(Table, Key, Changes) when
+    is_atom(Table) andalso
+        is_list(Changes)
+->
     #st{} = St = mfdb_manager:st(Table),
     update(St, Key, Changes);
-update(Table, Key, Changes)
-    when is_atom(Table) andalso
-    is_function(Changes, 1)  ->
+update(Table, Key, Changes) when
+    is_atom(Table) andalso
+        is_function(Changes, 1)
+->
     #st{write_lock = true} = St = mfdb_manager:st(Table),
     mfdb_lib:update(St, Key, Changes);
-update(#st{db = ?IS_TX} = St, Key, Changes)
-    when is_function(Changes, 1)  ->
+update(#st{db = ?IS_TX} = St, Key, Changes) when
+    is_function(Changes, 1)
+->
     mfdb_lib:update(St, Key, Changes);
-update(#st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St, Key, Changes)
-  when is_list(Changes) ->
+update(
+    #st{record_name = RecordName, fields = Fields, index = Index, ttl = Ttl} = St, Key, Changes
+) when
+    is_list(Changes)
+->
     IndexList = tl(tuple_to_list(Index)),
     ChangeTuple = erlang:setelement(1, erlang:make_tuple(size(Index), ?NOOP_SENTINAL), RecordName),
-    TtlPos = case Ttl of
-                 {field, Pos} -> Pos;
-                 _ -> -1
-             end,
+    TtlPos =
+        case Ttl of
+            {field, Pos} -> Pos;
+            _ -> -1
+        end,
     case validate_updates_(Fields, Changes, 2, ChangeTuple, [], []) of
         {error, _} = Err ->
             Err;
         {UpdateRec, NVals, NFields} ->
-            Flow = [{fun mfdb_lib:check_field_types/3, [NVals, NFields, TtlPos]},
-                    {fun mfdb_lib:check_index_sizes/2, [NVals, IndexList]},
-                    {fun mfdb_lib:update/3, [St, Key, UpdateRec]}],
+            Flow = [
+                {fun mfdb_lib:check_field_types/3, [NVals, NFields, TtlPos]},
+                {fun mfdb_lib:check_index_sizes/2, [NVals, IndexList]},
+                {fun mfdb_lib:update/3, [St, Key, UpdateRec]}
+            ],
             mfdb_lib:flow(Flow, true)
     end.
 
 %% @doc Either update an existing record or create a new record
 %% the provided fun will be 1-arity with signature fun(null | record()) -> {ok, record()}
--spec upsert(TableOrTx :: table_name() | st(), Key :: any(), function()) -> ok | {error, mismatched_record}.
-upsert(Table, Key, Fun)
-    when is_atom(Table) andalso
-    is_function(Fun, 1)  ->
+-spec upsert(TableOrTx :: table_name() | st(), Key :: any(), function()) ->
+    ok | {error, mismatched_record}.
+upsert(Table, Key, Fun) when
+    is_atom(Table) andalso
+        is_function(Fun, 1)
+->
     #st{} = St = mfdb_manager:st(Table),
     mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun);
-upsert(#st{db = ?IS_TX} = St, Key, Fun)
-    when is_function(Fun, 1)  ->
+upsert(#st{db = ?IS_TX} = St, Key, Fun) when
+    is_function(Fun, 1)
+->
     mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun).
-
 
 %% @private
 %% Assign the values in changes to the correct positions in the ChangeTuple
@@ -308,10 +347,14 @@ validate_updates_([{FieldName, FieldType} | Rest], Changes, Pos, ChangeTuple, Va
     case lists:keytake(FieldName, 1, Changes) of
         false ->
             %% Field not being changed, so set type to 'any'
-            validate_updates_(Rest, Changes, Pos + 1, ChangeTuple, [?NOOP_SENTINAL | ValueAcc], [{FieldName, any} | TypeAcc]);
+            validate_updates_(Rest, Changes, Pos + 1, ChangeTuple, [?NOOP_SENTINAL | ValueAcc], [
+                {FieldName, any} | TypeAcc
+            ]);
         {value, {FieldName, Value}, NChanges} ->
             NChangeTuple = erlang:setelement(Pos, ChangeTuple, Value),
-            validate_updates_(Rest, NChanges, Pos + 1, NChangeTuple, [Value | ValueAcc], [{FieldName, FieldType} | TypeAcc])
+            validate_updates_(Rest, NChanges, Pos + 1, NChangeTuple, [Value | ValueAcc], [
+                {FieldName, FieldType} | TypeAcc
+            ])
     end.
 
 read_counter(Table, Key) ->
@@ -333,7 +376,8 @@ delete_counter(Table, Key) when is_atom(Table) ->
     mfdb_manager:update_counters(St#st{counters = Counters}).
 
 %% @doc Atomic set of a counter value
--spec init_counter(Table :: table_name(), Key :: any(), Shards :: integer()) -> ok | {error, atom()}.
+-spec init_counter(Table :: table_name(), Key :: any(), Shards :: integer()) ->
+    ok | {error, atom()}.
 init_counter(Table, Key, ShardCount) when is_atom(Table) andalso is_integer(ShardCount) ->
     #st{counters = Counters0, pfx = TabPfx, db = Db} = St = mfdb_manager:st(Table),
     case maps:get(Key, Counters0, undefined) of
@@ -349,17 +393,22 @@ init_counter(Table, Key, ShardCount) when is_atom(Table) andalso is_integer(Shar
             Counters = Counters0#{Key => ShardCount},
             ok = mfdb_manager:update_counters(St#st{counters = Counters}),
             erlfdb:transactional(
-              Db,
-              fun(Tx) ->
-                      %% Increment random counter
-                      EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),
-                      %% Read the updated counter value
-                      CurrentCount = mfdb_lib:read_counter(Tx, TabPfx, Key),
-                      Pfx = mfdb_lib:encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
-                      ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Pfx)),
-                      EncKey = mfdb_lib:encode_key(TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}),
-                      ok = erlfdb:wait(erlfdb:add(Tx, EncKey, CurrentCount))
-              end);
+                Db,
+                fun(Tx) ->
+                    %% Increment random counter
+                    EncKey = mfdb_lib:encode_key(
+                        TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}
+                    ),
+                    %% Read the updated counter value
+                    CurrentCount = mfdb_lib:read_counter(Tx, TabPfx, Key),
+                    Pfx = mfdb_lib:encode_prefix(TabPfx, {?COUNTER_PREFIX, Key, ?FDB_WC}),
+                    ok = erlfdb:wait(erlfdb:clear_range_startswith(Tx, Pfx)),
+                    EncKey = mfdb_lib:encode_key(
+                        TabPfx, {?COUNTER_PREFIX, Key, rand:uniform(ShardCount)}
+                    ),
+                    ok = erlfdb:wait(erlfdb:add(Tx, EncKey, CurrentCount))
+                end
+            );
         _OldShardCount ->
             %% Increase the number of shards
             Counters = Counters0#{Key => ShardCount},
@@ -395,7 +444,7 @@ set_counter(Table, Key, Value) when is_atom(Table) andalso is_integer(Value) ->
 %%    fold_cont_(select_(St, MatchSpec, 1, InnerFun, OuterAcc)).
 
 %% @doc Delete a record from the table
--spec delete(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->  ok | {error, atom()}.
+-spec delete(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) -> ok | {error, atom()}.
 delete(Table, PkValue) when is_atom(Table) ->
     #st{} = St = mfdb_manager:st(Table),
     mfdb_lib:delete(St, PkValue, false);
@@ -403,23 +452,26 @@ delete(#st{} = Tx, PkValue) ->
     mfdb_lib:delete(Tx, PkValue, false).
 
 %% @doc Delete a record from the table
--spec delete_if_exists(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->  ok | {error, atom()}.
+-spec delete_if_exists(TxOrTable :: table_name() | fdb_tx(), PkVal :: any()) ->
+    ok | {error, atom()}.
 delete_if_exists(Table, PkValue) when is_atom(Table) ->
     #st{} = St = mfdb_manager:st(Table),
     mfdb_lib:delete(St, PkValue, true);
 delete_if_exists(#st{} = Tx, PkValue) ->
     mfdb_lib:delete(Tx, PkValue, true).
 
--spec subscribe(Table :: table_name(), Key :: any(), ReplyType :: watcher_option()) -> ok | {error, invalid_reply | no_such_table | {any(), any()}}.
+-spec subscribe(Table :: table_name(), Key :: any(), ReplyType :: watcher_option()) ->
+    ok | {error, invalid_reply | no_such_table | {any(), any()}}.
 subscribe(Table, Key, ReplyType) when is_atom(Table) ->
     case mfdb_lib:validate_reply_(ReplyType) of
         true ->
-            try gen_server:call(?TABPROC(Table), {subscribe, ReplyType, Key}, infinity)
+            try
+                gen_server:call(?TABPROC(Table), {subscribe, ReplyType, Key}, infinity)
             catch
                 exit:{noproc, _} ->
                     {error, no_such_table};
                 E:M ->
-                    {error, {E,M}}
+                    {error, {E, M}}
             end;
         false ->
             {error, invalid_reply}
@@ -427,12 +479,13 @@ subscribe(Table, Key, ReplyType) when is_atom(Table) ->
 
 -spec unsubscribe(Table :: table_name(), any()) -> ok | {error, no_such_table | {any(), any()}}.
 unsubscribe(Table, Key) when is_atom(Table) ->
-    try gen_server:call(?TABPROC(Table), {unsubscribe, Key}, infinity)
+    try
+        gen_server:call(?TABPROC(Table), {unsubscribe, Key}, infinity)
     catch
         exit:{noproc, _} ->
             {error, no_such_table};
         E:M:_St ->
-            {error, {E,M}}
+            {error, {E, M}}
     end.
 
 %% @doc return FoundDB cluster status information as a JSON term
@@ -440,7 +493,7 @@ unsubscribe(Table, Key) when is_atom(Table) ->
 -spec status() -> jsx:json_term().
 status() ->
     Db = mfdb_conn:connection(),
-    jsx:decode(erlfdb:get(Db, <<16#FF,16#FF,"/status/json">>), [{return_maps, false}]).
+    jsx:decode(erlfdb:get(Db, <<16#FF, 16#FF, "/status/json">>), [{return_maps, false}]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
@@ -470,18 +523,21 @@ handle_call({table_info, all}, _From, #{table := Table} = State) ->
     Count = mfdb_lib:table_count(St),
     Size = mfdb_lib:table_data_size(St),
     Indexes = [P || #idx{pos = P} <- tuple_to_list(Index)],
-    All0 = [{count, Count},
-            {size, Size},
-            {fields, Fields},
-            {indexes, Indexes}],
-    All = case Ttl0 of
-              {field, Pos} ->
-                  [{field_ttl, Pos} | All0];
-              {table, T} ->
-                  [{table_ttl, T} | All0];
-              undefined ->
-                  All0
-          end,
+    All0 = [
+        {count, Count},
+        {size, Size},
+        {fields, Fields},
+        {indexes, Indexes}
+    ],
+    All =
+        case Ttl0 of
+            {field, Pos} ->
+                [{field_ttl, Pos} | All0];
+            {table, T} ->
+                [{table_ttl, T} | All0];
+            undefined ->
+                All0
+        end,
     {reply, {ok, All}, State};
 handle_call({table_info, count}, _From, #{table := Table} = State) ->
     #st{} = St = mfdb_manager:st(Table),
@@ -500,14 +556,15 @@ handle_call({table_info, indexes}, _From, #{table := Table} = State) ->
     {reply, {ok, Indexes}, State};
 handle_call({table_info, ttl}, _From, #{table := Table} = State) ->
     #st{ttl = Ttl0} = mfdb_manager:st(Table),
-    Ttl = case Ttl0 of
-              {field, Pos} ->
-                  {field_ttl, Pos};
-              {table, T} ->
-                  {table_ttl, T};
-              undefined ->
-                  no_ttl
-          end,
+    Ttl =
+        case Ttl0 of
+            {field, Pos} ->
+                {field_ttl, Pos};
+            {table, T} ->
+                {table_ttl, T};
+            undefined ->
+                no_ttl
+        end,
     {reply, {ok, Ttl}, State};
 handle_call({subscribe, ReplyType, Key}, From, #{table := Table} = State) ->
     #st{pfx = TblPfx, tab = Tab} = mfdb_manager:st(Table),
@@ -534,7 +591,9 @@ handle_cast(_, State) ->
     {noreply, State}.
 
 %% @private
-handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, {ok, X}}}}, #{waiters := Waiters} = State) ->
+handle_info(
+    {'DOWN', Ref, process, _Pid0, {normal, {ImportId, {ok, X}}}}, #{waiters := Waiters} = State
+) ->
     %% Import is completed
     case lists:keytake(ImportId, 1, Waiters) of
         false ->
@@ -545,7 +604,9 @@ handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, {ok, X}}}}, #{wait
             gen_server:reply(From, {ok, X}),
             {noreply, State#{waiters => NWaiters}}
     end;
-handle_info({'DOWN', Ref, process, _Pid0, {normal, {ImportId, ImportError}}}, #{waiters := Waiters} = State) ->
+handle_info(
+    {'DOWN', Ref, process, _Pid0, {normal, {ImportId, ImportError}}}, #{waiters := Waiters} = State
+) ->
     %% Import is completed
     case lists:keytake(ImportId, 1, Waiters) of
         false ->
@@ -569,28 +630,29 @@ code_change(_, State, _) ->
 
 %% @private
 key_subscribe_(Table, ReplyType, From, TblPfx, Key) ->
-    try mfdb_watcher:subscribe(ReplyType, From, TblPfx, Key)
+    try
+        mfdb_watcher:subscribe(ReplyType, From, TblPfx, Key)
     catch
         exit:{noproc, _} ->
             %% No watcher process exists for the Key
             ok = mfdb_watcher_sup:create(Table, TblPfx, Key),
             key_subscribe_(Table, ReplyType, From, TblPfx, Key);
         E:M:_St ->
-            {error, {E,M}}
+            {error, {E, M}}
     end.
 
 %% @private
 key_unsubscribe_(From, Prefix, Key) ->
-    try mfdb_watcher:unsubscribe(From, Prefix, Key)
+    try
+        mfdb_watcher:unsubscribe(From, Prefix, Key)
     catch
         exit:{noproc, _} ->
             ok;
         E:M:_St ->
-            {error, {E,M}}
+            {error, {E, M}}
     end.
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%% INTERNAL %%%%%%%%%%%%%%%%%%%%%%%
@@ -601,7 +663,7 @@ select_(Table, Matchspec0, Limit) when is_atom(Table) ->
 select_(#st{index = Indexes0} = St, Matchspec0, Limit) ->
     {Guards, Binds, Ms} =
         case Matchspec0 of
-            [{ {{_V, '$1'}} , G, _}] ->
+            [{{{_V, '$1'}}, G, _}] ->
                 {G, [{1, ['$1']}], Matchspec0};
             [{HP, G, MsRet}] ->
                 {NewHP, NewGuards} = ms_rewrite(HP, G),
@@ -626,7 +688,8 @@ is_wild('_') ->
 is_wild(A) when is_atom(A) ->
     case atom_to_list(A) of
         "\$" ++ S ->
-            try begin
+            try
+                begin
                     _ = list_to_integer(S),
                     true
                 end
@@ -642,19 +705,19 @@ is_wild(A) when is_atom(A) ->
 bound_in_headpat(HP) when is_atom(HP) ->
     {all, HP};
 bound_in_headpat(HP) when is_tuple(HP) ->
-    [_|T] = tuple_to_list(HP),
+    [_ | T] = tuple_to_list(HP),
     map_vars(T, 2);
 bound_in_headpat(_) ->
     %% this is not the place to throw an exception
     none.
 
 %% @private
-map_vars([H|T], P) ->
+map_vars([H | T], P) ->
     case extract_vars(H) of
         [] ->
-            map_vars(T, P+1);
+            map_vars(T, P + 1);
         Vs ->
-            [{P, Vs}|map_vars(T, P+1)]
+            [{P, Vs} | map_vars(T, P + 1)]
     end;
 map_vars([], _) ->
     [].
@@ -663,33 +726,39 @@ map_vars([], _) ->
 ms_rewrite(HP, Guards) when is_atom(HP) ->
     {HP, Guards};
 ms_rewrite(HP, Guards) when is_tuple(HP) ->
-    [_|T] = tuple_to_list(HP),
+    [_ | T] = tuple_to_list(HP),
     {_, Used, Matches} =
         lists:foldl(
-          fun('_', {Inc, U, Acc}) ->
-                  {Inc + 1, U, Acc};
-             (M, {Inc, U, Acc}) when is_atom(M) ->
-                  case atom_to_binary(M, utf8) of
-                      <<"\$", _/binary>> ->
-                          {Inc + 1, [M | U], Acc};
-                      _ ->
-                          {Inc + 1, U, [{Inc, M} | Acc]}
-                  end;
-             (Ms, {Inc, U, Acc}) when is_tuple(Ms) ->
-                  Used = lists:foldl(
-                           fun(M, UAcc) ->
-                                   case is_atom(M) andalso atom_to_binary(M, utf8) of
-                                       <<"\$", _/binary>> ->
-                                           [M | UAcc];
-                                       _ ->
-                                           UAcc
-                                   end
-                           end, U, tuple_to_list(Ms)),
-                  {Inc + 1, Used, Acc};
-             (Match, {Inc, U, Acc}) ->
-                  {Inc + 1, U, [{Inc, Match} | Acc]}
-          end,
-          {2, [], []}, T),
+            fun
+                ('_', {Inc, U, Acc}) ->
+                    {Inc + 1, U, Acc};
+                (M, {Inc, U, Acc}) when is_atom(M) ->
+                    case atom_to_binary(M, utf8) of
+                        <<"\$", _/binary>> ->
+                            {Inc + 1, [M | U], Acc};
+                        _ ->
+                            {Inc + 1, U, [{Inc, M} | Acc]}
+                    end;
+                (Ms, {Inc, U, Acc}) when is_tuple(Ms) ->
+                    Used = lists:foldl(
+                        fun(M, UAcc) ->
+                            case is_atom(M) andalso atom_to_binary(M, utf8) of
+                                <<"\$", _/binary>> ->
+                                    [M | UAcc];
+                                _ ->
+                                    UAcc
+                            end
+                        end,
+                        U,
+                        tuple_to_list(Ms)
+                    ),
+                    {Inc + 1, Used, Acc};
+                (Match, {Inc, U, Acc}) ->
+                    {Inc + 1, U, [{Inc, Match} | Acc]}
+            end,
+            {2, [], []},
+            T
+        ),
     headpat_matches_to_guards(HP, Guards, Used, Matches).
 
 %% @private
@@ -706,7 +775,7 @@ next_bind(Used, X) ->
     Bind = list_to_atom("\$" ++ integer_to_list(X)),
     case lists:member(Bind, Used) of
         true ->
-            next_bind(Used, X+1);
+            next_bind(Used, X + 1);
         false ->
             {[Bind | Used], Bind}
     end.
@@ -739,26 +808,29 @@ range_guards([{Comp, Bind, Val} | Rest], Binds, Indexes, Acc) ->
 
 %% When tuples are used in the matchspec guards each tuple is wrapped in a tuple
 %% There's probably a better way to handle the unwrapping
-guard_val({ { { {Y, Mn, D} }, { { H, Mi, S} } } })
-  when is_integer(Y) andalso
-       is_integer(Mn) andalso
-       is_integer(D) andalso
-       is_integer(H) andalso
-       is_integer(Mi) andalso
-       is_number(S) ->
+guard_val({{{{Y, Mn, D}}, {{H, Mi, S}}}}) when
+    is_integer(Y) andalso
+        is_integer(Mn) andalso
+        is_integer(D) andalso
+        is_integer(H) andalso
+        is_integer(Mi) andalso
+        is_number(S)
+->
     %% curly-escaped Datetime
-    {{Y, Mn, D}, { H, Mi, S}};
-guard_val({ {W, X, Y, Z} })
-  when is_integer(W) andalso
-       is_integer(X) andalso
-       is_integer(Y) andalso
-       is_integer(Z) ->
+    {{Y, Mn, D}, {H, Mi, S}};
+guard_val({{W, X, Y, Z}}) when
+    is_integer(W) andalso
+        is_integer(X) andalso
+        is_integer(Y) andalso
+        is_integer(Z)
+->
     %% curly-escaped erlang ipv4
     {W, X, Y, Z};
-guard_val({ {X, Y, Z} })
-  when is_integer(X) andalso
-       is_integer(Y) andalso
-       is_integer(Z) ->
+guard_val({{X, Y, Z}}) when
+    is_integer(X) andalso
+        is_integer(Y) andalso
+        is_integer(Z)
+->
     %% curly-escaped erlang timestamp
     {X, Y, Z};
 guard_val(Other) ->
@@ -792,25 +864,32 @@ replace_(Orig, _Val) ->
 
 %% @private
 idx_sel(Guards, Indexes, #st{pfx = TabPfx} = St0) ->
-    IdxSel0 = [begin
-                   #idx{pos = KeyPos, data_key = IdxDataPfx} = Idx,
-                   I = idx_table_params_(Guards, KeyPos, TabPfx, IdxDataPfx),
-                   IdxValCount = case I of
-                                     {_, _, {{'$1', '$2'}}, _} ->
-                                         undefined;
-                                     {_, _, {{M, '$2'}}, _} ->
-                                         %% we have an exact match on in indexed value
-                                         mfdb_lib:idx_matches(St0, KeyPos, M);
-                                     _ ->
-                                         undefined
-                                 end,
-                   {KeyPos, I, IdxValCount}
-               end || Idx <- Indexes],
+    IdxSel0 = [
+        begin
+            #idx{pos = KeyPos, data_key = IdxDataPfx} = Idx,
+            I = idx_table_params_(Guards, KeyPos, TabPfx, IdxDataPfx),
+            IdxValCount =
+                case I of
+                    {_, _, {{'$1', '$2'}}, _} ->
+                        undefined;
+                    {_, _, {{M, '$2'}}, _} ->
+                        %% we have an exact match on in indexed value
+                        mfdb_lib:idx_matches(St0, KeyPos, M);
+                    _ ->
+                        undefined
+                end,
+            {KeyPos, I, IdxValCount}
+        end
+     || Idx <- Indexes
+    ],
     case IdxSel0 of
         [] ->
             no_index;
         IdxSel0 ->
-            AvailIdx = [{idx_val_(I), Kp, I, IdxVCount} || {Kp, I, IdxVCount} <- IdxSel0, I =/= undefined],
+            AvailIdx = [
+                {idx_val_(I), Kp, I, IdxVCount}
+             || {Kp, I, IdxVCount} <- IdxSel0, I =/= undefined
+            ],
             case idx_pick(AvailIdx) of
                 undefined ->
                     no_index;
@@ -828,43 +907,51 @@ idx_pick([], Res) ->
     Res;
 idx_pick([First | Rest], undefined) ->
     idx_pick(Rest, First);
-idx_pick([{_IdxVal0, _, _, ValCount0} = Idx | Rest], {_IdxVal1, _, _, ValCount1})
-  when is_integer(ValCount0) andalso
-       is_integer(ValCount1) andalso
-       ValCount0 < ValCount1 ->
+idx_pick([{_IdxVal0, _, _, ValCount0} = Idx | Rest], {_IdxVal1, _, _, ValCount1}) when
+    is_integer(ValCount0) andalso
+        is_integer(ValCount1) andalso
+        ValCount0 < ValCount1
+->
     %% less keys to scan through
     idx_pick(Rest, Idx);
-idx_pick([{_IdxVal0, _, _, ValCount0} | Rest], {_IdxVal1, _, _, ValCount1} = Idx)
-  when is_integer(ValCount0) andalso
-       is_integer(ValCount1) andalso
-       ValCount1 < ValCount0 ->
+idx_pick([{_IdxVal0, _, _, ValCount0} | Rest], {_IdxVal1, _, _, ValCount1} = Idx) when
+    is_integer(ValCount0) andalso
+        is_integer(ValCount1) andalso
+        ValCount1 < ValCount0
+->
     idx_pick(Rest, Idx);
-idx_pick([{IdxVal0, _, _, ValCount0} | Rest], {IdxVal1, _, _, ValCount1} = Idx)
-  when is_integer(ValCount0) andalso
-       is_integer(ValCount1) andalso
-       ValCount0 =:= ValCount1 andalso
-       IdxVal1 >= IdxVal0 ->
+idx_pick([{IdxVal0, _, _, ValCount0} | Rest], {IdxVal1, _, _, ValCount1} = Idx) when
+    is_integer(ValCount0) andalso
+        is_integer(ValCount1) andalso
+        ValCount0 =:= ValCount1 andalso
+        IdxVal1 >= IdxVal0
+->
     idx_pick(Rest, Idx);
-idx_pick([{IdxVal0, _, _, ValCount0} = Idx | Rest], {IdxVal1, _, _, ValCount1})
-  when is_integer(ValCount0) andalso
-       is_integer(ValCount1) andalso
-       ValCount0 =:= ValCount1 andalso
-       IdxVal0 >= IdxVal1 ->
+idx_pick([{IdxVal0, _, _, ValCount0} = Idx | Rest], {IdxVal1, _, _, ValCount1}) when
+    is_integer(ValCount0) andalso
+        is_integer(ValCount1) andalso
+        ValCount0 =:= ValCount1 andalso
+        IdxVal0 >= IdxVal1
+->
     idx_pick(Rest, Idx);
-idx_pick([{_IdxVal0, _, _, ValCount0} = Idx | Rest], {_IdxVal1, _, _, undefined})
-  when is_integer(ValCount0) ->
+idx_pick([{_IdxVal0, _, _, ValCount0} = Idx | Rest], {_IdxVal1, _, _, undefined}) when
+    is_integer(ValCount0)
+->
     %% explicit index vs scan
     idx_pick(Rest, Idx);
-idx_pick([{_IdxVal0, _, _, undefined} | Rest], {_IdxVal1, _, _, ValCount1} = Idx)
-  when is_integer(ValCount1) ->
+idx_pick([{_IdxVal0, _, _, undefined} | Rest], {_IdxVal1, _, _, ValCount1} = Idx) when
+    is_integer(ValCount1)
+->
     %% explicit index vs scan
     idx_pick(Rest, Idx);
-idx_pick([{IdxVal0, _, _, undefined} = Idx | Rest], {IdxVal1, _, _, undefined})
-  when IdxVal0 >= IdxVal1 ->
+idx_pick([{IdxVal0, _, _, undefined} = Idx | Rest], {IdxVal1, _, _, undefined}) when
+    IdxVal0 >= IdxVal1
+->
     %% explicit index vs scan
     idx_pick(Rest, Idx);
-idx_pick([{IdxVal0, _, _, undefined} | Rest], {IdxVal1, _, _, undefined} = Idx)
-  when IdxVal1 >= IdxVal0 ->
+idx_pick([{IdxVal0, _, _, undefined} | Rest], {IdxVal1, _, _, undefined} = Idx) when
+    IdxVal1 >= IdxVal0
+->
     idx_pick(Rest, Idx).
 
 %% @doc convert guards into index-table specific selectors
@@ -878,33 +965,45 @@ idx_table_params_(Guards, Keypos, TblPfx, IdxDataPfx) ->
         false ->
             undefined;
         _ ->
-            idx_table_params_(Guards, Keypos, TblPfx, IdxDataPfx, undefined, undefined, {{'$1', '$2'}}, [])
+            idx_table_params_(
+                Guards, Keypos, TblPfx, IdxDataPfx, undefined, undefined, {{'$1', '$2'}}, []
+            )
     end.
 
 %% @private
 idx_table_params_([], _Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards) ->
     PfxStart = index_pfx(IdxDataPfx, start, ?FDB_WC, true),
     PfxEnd = index_pfx(IdxDataPfx, 'end', ?FDB_END, true),
-    {replace_(Start, {fdb, mfdb_lib:encode_prefix(TblPfx, PfxStart)}),
-     replace_(End, {fdb, erlfdb_key:strinc(mfdb_lib:encode_prefix(TblPfx, PfxEnd))}),
-     Match,
-     Guards};
-idx_table_params_([{Keypos, '=:=', Val} | Rest], Keypos, TblPfx, IdxDataPfx, _Start, _End, _Match, Guards) ->
+    {
+        replace_(Start, {fdb, mfdb_lib:encode_prefix(TblPfx, PfxStart)}),
+        replace_(End, {fdb, erlfdb_key:strinc(mfdb_lib:encode_prefix(TblPfx, PfxEnd))}),
+        Match,
+        Guards
+    };
+idx_table_params_(
+    [{Keypos, '=:=', Val} | Rest], Keypos, TblPfx, IdxDataPfx, _Start, _End, _Match, Guards
+) ->
     Match = {{Val, '$2'}},
     PfxStart = index_pfx(IdxDataPfx, start, Val, true),
     PfxEnd = index_pfx(IdxDataPfx, 'end', Val, true),
     Start = {fdbr, mfdb_lib:encode_prefix(TblPfx, PfxStart)},
     End = {fdbr, erlfdb_key:strinc(mfdb_lib:encode_prefix(TblPfx, PfxEnd))},
     idx_table_params_(Rest, Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards);
-idx_table_params_([{Keypos, Comp, Val} | Rest], Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards)
-  when Comp =:= '>=' orelse Comp =:= '>' ->
+idx_table_params_(
+    [{Keypos, Comp, Val} | Rest], Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards
+) when
+    Comp =:= '>=' orelse Comp =:= '>'
+->
     NGuards = [{Comp, '$1', Val} | Guards],
     PfxStart = index_pfx(IdxDataPfx, start, Val, true),
     NStart0 = {fdbr, mfdb_lib:encode_prefix(TblPfx, PfxStart)},
     NStart = replace_(Start, NStart0),
     idx_table_params_(Rest, Keypos, TblPfx, IdxDataPfx, NStart, End, Match, NGuards);
-idx_table_params_([{Keypos, Comp, Val} | Rest], Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards)
-  when Comp =:= '=<' orelse Comp =:= '<' ->
+idx_table_params_(
+    [{Keypos, Comp, Val} | Rest], Keypos, TblPfx, IdxDataPfx, Start, End, Match, Guards
+) when
+    Comp =:= '=<' orelse Comp =:= '<'
+->
     NGuards = [{Comp, '$1', Val} | Guards],
     PfxEnd = index_pfx(IdxDataPfx, 'end', Val, true),
     NEnd0 = {fdbr, erlfdb_key:strinc(mfdb_lib:encode_prefix(TblPfx, PfxEnd))},
@@ -922,15 +1021,28 @@ index_pfx(IdxDataPfx, 'end', V, true) ->
     Pfx.
 
 %% @private
-v_(undefined) -> 0;
-v_({fdb, B}) when is_binary(B) -> 1; %% pre-calculated range
-v_({fdbr, B}) when is_binary(B) -> 2; %% pre-calculated range
-v_({{_, '$1'}}) -> 10;
-v_({{'$1', '$2'}}) -> 0; %% indicates guards will be processed
-v_({{_, '$2'}}) -> 20; %% indicates a head-bound match
-v_({_, _}) -> 1;
-v_(?FDB_WC) -> 0; %% scan from start of table
-v_(?FDB_END) -> 0; %% scan to end of table
+v_(undefined) ->
+    0;
+%% pre-calculated range
+v_({fdb, B}) when is_binary(B) -> 1;
+%% pre-calculated range
+v_({fdbr, B}) when is_binary(B) -> 2;
+v_({{_, '$1'}}) ->
+    10;
+%% indicates guards will be processed
+v_({{'$1', '$2'}}) ->
+    0;
+%% indicates a head-bound match
+v_({{_, '$2'}}) ->
+    20;
+v_({_, _}) ->
+    1;
+%% scan from start of table
+v_(?FDB_WC) ->
+    0;
+%% scan to end of table
+v_(?FDB_END) ->
+    0;
 v_(B) when is_binary(B) -> 1;
 v_(L) when is_list(L) ->
     %% number of guards
@@ -939,23 +1051,23 @@ v_(L) when is_list(L) ->
 %% @private
 idx_val_(undefined) ->
     0;
-idx_val_({S,E,C,G}) ->
-    lists:sum([v_(X) || X <- [S,E,C,G]]).
+idx_val_({S, E, C, G}) ->
+    lists:sum([v_(X) || X <- [S, E, C, G]]).
 
 %% @private
 wild_in_body(BodyVars) ->
-    intersection(BodyVars, ['$$','$_']) =/= [].
+    intersection(BodyVars, ['$$', '$_']) =/= [].
 
 %% @private
-needs_key_only([{HP,_,Body}]) ->
+needs_key_only([{HP, _, Body}]) ->
     BodyVars = lists:flatmap(fun extract_vars/1, Body),
     %% Note that we express the conditions for "needs more than key" and negate.
     InHead = bound_in_headpat(HP),
-    not(wild_in_body(BodyVars) orelse
+    not (wild_in_body(BodyVars) orelse
         case InHead of
-            {all,V} -> lists:member(V, BodyVars);
-            none    -> false;
-            Vars    -> any_in_body(lists:keydelete(2,1,Vars), BodyVars)
+            {all, V} -> lists:member(V, BodyVars);
+            none -> false;
+            Vars -> any_in_body(lists:keydelete(2, 1, Vars), BodyVars)
         end);
 needs_key_only(_) ->
     %% don't know
@@ -963,16 +1075,19 @@ needs_key_only(_) ->
 
 %% @private
 any_in_body(Vars, BodyVars) ->
-    lists:any(fun({_,Vs}) ->
-                      intersection(Vs, BodyVars) =/= []
-              end, Vars).
+    lists:any(
+        fun({_, Vs}) ->
+            intersection(Vs, BodyVars) =/= []
+        end,
+        Vars
+    ).
 
 %% @private
-extract_vars([H|T]) ->
+extract_vars([H | T]) ->
     extract_vars(H) ++ extract_vars(T);
 extract_vars(T) when is_tuple(T) ->
     extract_vars(tuple_to_list(T));
-extract_vars(T) when T=='$$'; T=='$_' ->
+extract_vars(T) when T == '$$'; T == '$_' ->
     [T];
 extract_vars(T) when is_atom(T) ->
     case is_wild(T) of
@@ -985,42 +1100,42 @@ extract_vars(_) ->
     [].
 
 %% @private
-intersection(A,B) when is_list(A), is_list(B) ->
+intersection(A, B) when is_list(A), is_list(B) ->
     A -- (A -- B).
 
 %% @private
 outer_match_fun_(TabPfx, OCompiledKeyMs) ->
     fun(Tx, Id, Acc0) ->
-            K = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, Id}),
-            case mfdb_lib:wait(erlfdb:get(Tx, K)) of
-                not_found ->
-                    %% This should only happen with a dead index
-                    %% entry (data deleted after we got index)
-                    Acc0;
-                V ->
-                    Rec = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, V)),
-                    case ets:match_spec_run([Rec], OCompiledKeyMs) of
-                        [] ->
-                            %% Did not match specification
-                            Acc0;
-                        [Matched] ->
-                            %% Matched specification
-                            [Matched | Acc0]
-                    end
-            end
+        K = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, Id}),
+        case mfdb_lib:wait(erlfdb:get(Tx, K)) of
+            not_found ->
+                %% This should only happen with a dead index
+                %% entry (data deleted after we got index)
+                Acc0;
+            V ->
+                Rec = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, V)),
+                case ets:match_spec_run([Rec], OCompiledKeyMs) of
+                    [] ->
+                        %% Did not match specification
+                        Acc0;
+                    [Matched] ->
+                        %% Matched specification
+                        [Matched | Acc0]
+                end
+        end
     end.
 
 %% @private
 index_match_fun_(ICompiledKeyMs, OuterMatchFun) ->
     fun(Tx, {{_, Id}} = R, IAcc) ->
-            case ets:match_spec_run([R], ICompiledKeyMs) of
-                [] ->
-                    %% Did not match
-                    IAcc;
-                [{{_, Id}}] ->
-                    %% Matched
-                    OuterMatchFun(Tx, Id, IAcc)
-            end
+        case ets:match_spec_run([R], ICompiledKeyMs) of
+            [] ->
+                %% Did not match
+                IAcc;
+            [{{_, Id}}] ->
+                %% Matched
+                OuterMatchFun(Tx, Id, IAcc)
+        end
     end.
 
 %% @private
@@ -1062,52 +1177,67 @@ do_indexed_select(#st{pfx = TabPfx} = St, MS, {_IdxPos, {Start, End, Match, Guar
 %% @private
 do_iter('$end_of_table', _Limit, Acc) ->
     {mfdb_lib:sort(Acc), '$end_of_table'};
-do_iter({Data, '$end_of_table'}, _Limit, Acc)
-  when is_list(Data) andalso
-       is_list(Acc) ->
+do_iter({Data, '$end_of_table'}, _Limit, Acc) when
+    is_list(Data) andalso
+        is_list(Acc)
+->
     {mfdb_lib:sort(lists:append(Acc, Data)), '$end_of_table'};
 do_iter({Data, '$end_of_table'}, _Limit, _Acc) ->
     {Data, '$end_of_table'};
-do_iter({[], Iter}, Limit, Acc)
-  when is_function(Iter, 0) ->
+do_iter({[], Iter}, Limit, Acc) when
+    is_function(Iter, 0)
+->
     %% io:format("case loop~n"),
     do_iter(Iter(), Limit, Acc);
-do_iter({Data, Iter}, _Limit, Acc)
-  when is_function(Iter) andalso
-       is_list(Data) andalso
-       is_list(Acc) ->
+do_iter({Data, Iter}, _Limit, Acc) when
+    is_function(Iter) andalso
+        is_list(Data) andalso
+        is_list(Acc)
+->
     %% io:format("case 0~n"),
     NAcc = mfdb_lib:sort(lists:append(Acc, Data)),
     {NAcc, Iter};
-do_iter({Data, Iter}, _Limit, _Acc)
-  when is_function(Iter) ->
+do_iter({Data, Iter}, _Limit, _Acc) when
+    is_function(Iter)
+->
     %% io:format("case 1~n"),
     {Data, Iter}.
 
 %% @private
--spec iter_(St :: st(), StartKey :: any(), KeysOnly :: boolean(), Ms :: undefined | ets:comp_match_spec(), DataFun :: undefined | function(), InAcc :: list(), DataLimit :: pos_integer()) ->
-          {list(), '$end_of_table' | continuation()}.
+-spec iter_(
+    St :: st(),
+    StartKey :: any(),
+    KeysOnly :: boolean(),
+    Ms :: undefined | ets:comp_match_spec(),
+    DataFun :: undefined | function(),
+    InAcc :: list(),
+    DataLimit :: pos_integer()
+) ->
+    {list(), '$end_of_table' | continuation()}.
 iter_(#st{db = Db, pfx = TabPfx}, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataLimit) ->
-    Reverse = 0, %% we're not iterating in reverse
+    %% we're not iterating in reverse
+    Reverse = 0,
     {SKey, EKey} = iter_start_end_(TabPfx, StartKey0),
     St0 = #iter_st{
-             db = Db,
-             pfx = TabPfx,
-             data_limit = DataLimit,
-             data_acc = InAcc,
-             data_fun = DataFun,
-             keys_only = KeysOnly,
-             compiled_ms = Ms,
-             start_key = SKey,
-             start_sel = erlfdb_key:to_selector(SKey),
-             end_sel = erlfdb_key:to_selector(EKey),
-             limit = 10000, %% we use a fix limit of 1000 for the number of KVs to pull
-             target_bytes = 0,
-             streaming_mode = iterator,%% it's *not* stream_iterator bad type spec in erlfdb_nif
-             iteration = 1,
-             snapshot = false,
-             reverse = Reverse
-            },
+        db = Db,
+        pfx = TabPfx,
+        data_limit = DataLimit,
+        data_acc = InAcc,
+        data_fun = DataFun,
+        keys_only = KeysOnly,
+        compiled_ms = Ms,
+        start_key = SKey,
+        start_sel = erlfdb_key:to_selector(SKey),
+        end_sel = erlfdb_key:to_selector(EKey),
+        %% we use a fix limit of 1000 for the number of KVs to pull
+        limit = 10000,
+        target_bytes = 0,
+        %% it's *not* stream_iterator bad type spec in erlfdb_nif
+        streaming_mode = iterator,
+        iteration = 1,
+        snapshot = false,
+        reverse = Reverse
+    },
     case iter_transaction_(St0) of
         #iter_st{} = ItrSt ->
             iter_int_({cont, ItrSt});
@@ -1116,30 +1246,57 @@ iter_(#st{db = Db, pfx = TabPfx}, StartKey0, KeysOnly, Ms, DataFun, InAcc, DataL
     end.
 
 %% @private
-iter_int_({cont, #iter_st{tx = Tx,
-                          pfx = TabPfx,
-                          keys_only = KeysOnly,
-                          compiled_ms = Ms,
-                          data_limit = DataLimit, %% Max rec in accum per continuation
-                          data_count = DataCount, %% count in continuation accumulator
-                          data_acc = DataAcc, %% accum for continuation
-                          data_fun = DataFun, %% Fun applied to selected data when not key-only
-                          iteration = Iteration} = St0}) ->
+iter_int_(
+    {cont,
+        #iter_st{
+            tx = Tx,
+            pfx = TabPfx,
+            keys_only = KeysOnly,
+            compiled_ms = Ms,
+            %% Max rec in accum per continuation
+            data_limit = DataLimit,
+            %% count in continuation accumulator
+            data_count = DataCount,
+            %% accum for continuation
+            data_acc = DataAcc,
+            %% Fun applied to selected data when not key-only
+            data_fun = DataFun,
+            iteration = Iteration
+        } = St0}
+) ->
     {{RawRows, Count, HasMore0}, St} = iter_future_(St0),
     case Count of
         0 ->
             {DataAcc, '$end_of_table'};
         _ ->
-            {Rows, HasMore, LastKey} = rows_more_last_(DataLimit, DataCount, RawRows,
-                                                       Count, HasMore0),
-            {NewDataAcc0, AddCount} = iter_append_(Rows, Tx, TabPfx, KeysOnly, Ms,
-                                                   DataFun, 0, DataAcc),
-            NewDataAcc = case is_list(NewDataAcc0) of true -> lists:reverse(NewDataAcc0); false -> NewDataAcc0 end,
+            {Rows, HasMore, LastKey} = rows_more_last_(
+                DataLimit,
+                DataCount,
+                RawRows,
+                Count,
+                HasMore0
+            ),
+            {NewDataAcc0, AddCount} = iter_append_(
+                Rows,
+                Tx,
+                TabPfx,
+                KeysOnly,
+                Ms,
+                DataFun,
+                0,
+                DataAcc
+            ),
+            NewDataAcc =
+                case is_list(NewDataAcc0) of
+                    true -> lists:reverse(NewDataAcc0);
+                    false -> NewDataAcc0
+                end,
             NewDataCount = DataCount + AddCount,
             HitLimit = hit_data_limit_(NewDataCount, DataLimit),
-            Done = RawRows =:= []
-                orelse HitLimit =:= true
-                orelse (HitLimit =:= false andalso HasMore =:= false),
+            Done =
+                RawRows =:= [] orelse
+                    HitLimit =:= true orelse
+                    (HitLimit =:= false andalso HasMore =:= false),
             case Done of
                 true when HasMore =:= false ->
                     %% no more rows
@@ -1148,22 +1305,22 @@ iter_int_({cont, #iter_st{tx = Tx,
                 true when HasMore =:= true ->
                     %% there are more rows, return accumulated data and a continuation fun
                     NSt0 = St#iter_st{
-                             start_sel = erlfdb_key:first_greater_than(LastKey),
-                             iteration = Iteration + 1,
-                             data_count = 0,
-                             data_acc = []
-                            },
+                        start_sel = erlfdb_key:first_greater_than(LastKey),
+                        iteration = Iteration + 1,
+                        data_count = 0,
+                        data_acc = []
+                    },
                     NSt = iter_transaction_(NSt0),
                     {NewDataAcc, fun() -> iter_int_({cont, NSt}) end};
                 false ->
                     %% there are more rows, but we need to continue accumulating
                     %% This loops internally, so no fun, just the continuation
                     NSt0 = St#iter_st{
-                             start_sel = erlfdb_key:first_greater_than(LastKey),
-                             iteration = Iteration + 1,
-                             data_count = NewDataCount,
-                             data_acc = NewDataAcc
-                            },
+                        start_sel = erlfdb_key:first_greater_than(LastKey),
+                        iteration = Iteration + 1,
+                        data_count = NewDataCount,
+                        data_acc = NewDataAcc
+                    },
                     NSt = iter_transaction_(NSt0),
                     iter_int_({cont, NSt})
             end
@@ -1180,8 +1337,10 @@ iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) 
             iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
         {idx, Idx} ->
             %% This is a matched index without a supplied fun
-            case Ms =/= undefined andalso
-                ets:match_spec_run([Idx], Ms) of
+            case
+                Ms =/= undefined andalso
+                    ets:match_spec_run([Idx], Ms)
+            of
                 false ->
                     iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, Acc);
                 [] ->
@@ -1194,7 +1353,7 @@ iter_append_([{K, V} | Rest], Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount, Acc) 
             %% This is an actual record, not an index
             Rec = mfdb_lib:decode_val(Tx, TabPfx, V),
             case Ms =/= undefined andalso ets:match_spec_run([Rec], Ms) of
-                false  when is_function(DataFun, 3) ->
+                false when is_function(DataFun, 3) ->
                     %% Record matched specification, is a fold operation, apply the supplied DataFun
                     NAcc = DataFun(Tx, Rec, Acc),
                     iter_append_(Rest, Tx, TabPfx, KeysOnly, Ms, DataFun, AddCount + 1, NAcc);
@@ -1223,13 +1382,15 @@ iter_val_(false, _Key, Rec) ->
 
 %% @private
 iter_start_end_(TblPfx, {range, S0, E0}) ->
-    S = case S0 of
+    S =
+        case S0 of
             {S1k, S1} when S1k =:= fdb orelse S1k =:= fdbr ->
                 erlfdb_key:first_greater_or_equal(S1);
             S0 ->
                 mfdb_lib:encode_prefix(TblPfx, {?DATA_PREFIX, S0})
         end,
-    E = case E0 of
+    E =
+        case E0 of
             {E1k, E1} when E1k =:= fdb orelse E1k =:= fdbr ->
                 E1;
             E0 ->
@@ -1252,7 +1413,8 @@ iter_transaction_(#iter_st{db = Db, tx = Tx} = St) ->
 iter_commit_(undefined) ->
     ok;
 iter_commit_(?IS_TX = Tx) ->
-    try ok = mfdb_lib:commit(Tx)
+    try
+        ok = mfdb_lib:commit(Tx)
     catch
         _E:{erlfdb_error, ErrCode}:_Stacktrace ->
             ok = mfdb_lib:wait(erlfdb:on_error(Tx, ErrCode), 5000),
@@ -1266,22 +1428,34 @@ iter_commit_(?IS_TX = Tx) ->
     end.
 
 %% @private
-iter_future_(#iter_st{tx = Tx, start_sel = StartKey,
-                      end_sel = EndKey, limit = Limit,
-                      target_bytes = TargetBytes, streaming_mode = StreamingMode,
-                      iteration = Iteration, snapshot = Snapshot,
-                      reverse = Reverse} = St0) ->
-    try mfdb_lib:wait(erlfdb_nif:transaction_get_range(
-                        Tx,
-                        StartKey,
-                        EndKey,
-                        Limit,
-                        TargetBytes,
-                        StreamingMode,
-                        Iteration,
-                        Snapshot,
-                        Reverse
-                       )) of
+iter_future_(
+    #iter_st{
+        tx = Tx,
+        start_sel = StartKey,
+        end_sel = EndKey,
+        limit = Limit,
+        target_bytes = TargetBytes,
+        streaming_mode = StreamingMode,
+        iteration = Iteration,
+        snapshot = Snapshot,
+        reverse = Reverse
+    } = St0
+) ->
+    try
+        mfdb_lib:wait(
+            erlfdb_nif:transaction_get_range(
+                Tx,
+                StartKey,
+                EndKey,
+                Limit,
+                TargetBytes,
+                StreamingMode,
+                Iteration,
+                Snapshot,
+                Reverse
+            )
+        )
+    of
         {_RawRows, _Count, _HasMore} = R ->
             {R, St0}
     catch
@@ -1297,8 +1471,9 @@ hit_data_limit_(DataCount, IterLimit) ->
     DataCount + 1 > IterLimit.
 
 %% @private
-rows_more_last_(DataLimit, DataCount, RawRows, Count, HasMore0)
-  when (DataLimit - DataCount) > Count ->
+rows_more_last_(DataLimit, DataCount, RawRows, Count, HasMore0) when
+    (DataLimit - DataCount) > Count
+->
     {LastKey0, _} = lists:last(RawRows),
     {RawRows, HasMore0, LastKey0};
 rows_more_last_(DataLimit, DataCount, RawRows, _Count, HasMore0) ->
@@ -1313,64 +1488,71 @@ do_import_(Table, SourceFile, ImportId) ->
     do_import_(Table, SourceFile, ImportId, false).
 
 do_import_(Table, SourceFile, ImportId, Overwrite) ->
-    #st{record_name = RecName, pfx = TblPfx, fields = Fields, index = Index, ttl = Ttl} = St = mfdb_manager:st(Table),
+    #st{record_name = RecName, pfx = TblPfx, fields = Fields, index = Index, ttl = Ttl} =
+        St = mfdb_manager:st(Table),
     Fname = iolist_to_binary(filename:basename(SourceFile)),
-    TtlPos = case Ttl of
-                 {field, Pos} -> Pos;
-                 _ -> -1
-             end,
+    TtlPos =
+        case Ttl of
+            {field, Pos} -> Pos;
+            _ -> -1
+        end,
     IndexList = tl(tuple_to_list(Index)),
     ExpectLength = length(Fields) + 1,
-    TypeCheckFun = case lists:all(fun(F) -> is_atom(F) end, Fields) of
-                       true ->
-                           fun(_,_,_) -> true end;
-                       false ->
-                           fun mfdb_lib:check_field_types/3
-                   end,
-    IndexCheckFun = case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
-                        true ->
-                            fun(_,_) -> true end;
-                        false ->
-                            fun mfdb_lib:check_index_sizes/2
-                    end,
-    WriteFun = case Overwrite of
-                   true ->
-                       fun mfdb_lib:write/3;
-                   false ->
-                       fun(#st{db = Db} = InSt, InKey, InObject) ->
-                               EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, element(2, InObject)}),
-                               case erlfdb:get(Db, EncKey) of
-                                   not_found ->
-                                       mfdb_lib:write(InSt, InKey, InObject);
-                                   _EncVal ->
-                                       skipped
-                               end
-                       end
-               end,
+    TypeCheckFun =
+        case lists:all(fun(F) -> is_atom(F) end, Fields) of
+            true ->
+                fun(_, _, _) -> true end;
+            false ->
+                fun mfdb_lib:check_field_types/3
+        end,
+    IndexCheckFun =
+        case lists:all(fun(F) -> F =:= undefined end, tuple_to_list(Index)) of
+            true ->
+                fun(_, _) -> true end;
+            false ->
+                fun mfdb_lib:check_index_sizes/2
+        end,
+    WriteFun =
+        case Overwrite of
+            true ->
+                fun mfdb_lib:write/3;
+            false ->
+                fun(#st{db = Db} = InSt, InKey, InObject) ->
+                    EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, element(2, InObject)}),
+                    case erlfdb:get(Db, EncKey) of
+                        not_found ->
+                            mfdb_lib:write(InSt, InKey, InObject);
+                        _EncVal ->
+                            skipped
+                    end
+                end
+        end,
     ImportFun =
         fun(ReplyTo, ObjectTuple) ->
-                [RName | ObjectList] = tuple_to_list(ObjectTuple),
-                [RKey | _] = ObjectList,
-                InRec = {RName, size(ObjectTuple)},
-                Expect = {RecName, ExpectLength},
-                %% Functions must return 'true' to continue, anything else will exit early
-                Flow = [{fun(X,Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
-                        {TypeCheckFun, [ObjectList, Fields, TtlPos]},
-                        {IndexCheckFun, [ObjectList, IndexList]},
-                        {WriteFun, [St, RKey, ObjectTuple]}],
-                try mfdb_lib:flow(Flow, true) of
-                    ok ->
-                        ReplyTo ! {ok, 1};
-                    skipped ->
-                        ReplyTo ! {ok, 0};
-                    _Other ->
-                        error_logger:error_msg("~s Import error: ~p ~p", [Fname, _Other, ObjectTuple]),
-                        ReplyTo ! {ok, 0}
-                catch
-                    E:M:Stack ->
-                        error_logger:error_msg("~s Import error: ~p", [Fname, {E,M,Stack}]),
-                        ReplyTo ! {ok, 0}
-                end
+            [RName | ObjectList] = tuple_to_list(ObjectTuple),
+            [RKey | _] = ObjectList,
+            InRec = {RName, size(ObjectTuple)},
+            Expect = {RecName, ExpectLength},
+            %% Functions must return 'true' to continue, anything else will exit early
+            Flow = [
+                {fun(X, Y) -> X =:= Y orelse {error, invalid_record} end, [InRec, Expect]},
+                {TypeCheckFun, [ObjectList, Fields, TtlPos]},
+                {IndexCheckFun, [ObjectList, IndexList]},
+                {WriteFun, [St, RKey, ObjectTuple]}
+            ],
+            try mfdb_lib:flow(Flow, true) of
+                ok ->
+                    ReplyTo ! {ok, 1};
+                skipped ->
+                    ReplyTo ! {ok, 0};
+                _Other ->
+                    error_logger:error_msg("~s Import error: ~p ~p", [Fname, _Other, ObjectTuple]),
+                    ReplyTo ! {ok, 0}
+            catch
+                E:M:Stack ->
+                    error_logger:error_msg("~s Import error: ~p", [Fname, {E, M, Stack}]),
+                    ReplyTo ! {ok, 0}
+            end
         end,
     case file:open(SourceFile, [read]) of
         {ok, Fd} ->
@@ -1390,17 +1572,18 @@ consult_stream(Fd, Fname, Fun) ->
 consult_stream(Fd, Line, Fname, Fun, Acc0, Cnt) ->
     case io:read(Fd, '', Line) of
         {ok, Term, EndLine} ->
-            NAcc = case (Cnt rem 5000) =:= 0 of
-                       true ->
-                           Self = self(),
-                           Pids = [spawn(fun() -> Fun(Self, X) end) || X <- Acc0],
-                           L = length(Pids),
-                           rev_import_results(Fname, L, L, 0),
-                           io:format("~s Import ~p so far~n", [Fname, Cnt]),
-                           [Term];
-                       false ->
-                           [Term | Acc0]
-                   end,
+            NAcc =
+                case (Cnt rem 5000) =:= 0 of
+                    true ->
+                        Self = self(),
+                        Pids = [spawn(fun() -> Fun(Self, X) end) || X <- Acc0],
+                        L = length(Pids),
+                        rev_import_results(Fname, L, L, 0),
+                        io:format("~s Import ~p so far~n", [Fname, Cnt]),
+                        [Term];
+                    false ->
+                        [Term | Acc0]
+                end,
             consult_stream(Fd, EndLine, Fname, Fun, NAcc, Cnt + 1);
         {error, Error, _Line} ->
             {error, Error};
@@ -1419,10 +1602,9 @@ rev_import_results(Fname, Tot, Cnt, Added) ->
     receive
         {ok, Add} ->
             rev_import_results(Fname, Tot, Cnt - 1, Added + Add)
-    after
-        60000 ->
-            error_logger:error_msg("~s Import failed", [Fname]),
-            ok
+    after 60000 ->
+        error_logger:error_msg("~s Import failed", [Fname]),
+        ok
     end.
 
 %%%  New fold impl %%%%
@@ -1463,16 +1645,18 @@ rev_import_results(Fname, Tot, Cnt, Added) ->
 %%        end, AfterRecs).
 %% @end
 -spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any()) -> any().
-fold(Table, InnerFun, InnerAcc)
-  when is_atom(Table) andalso
-       (is_function(InnerFun, 3) orelse
-        is_function(InnerFun, 2)) ->
-    MatchSpec = [{'_',[],['$_']}],
+fold(Table, InnerFun, InnerAcc) when
+    is_atom(Table) andalso
+        (is_function(InnerFun, 3) orelse
+            is_function(InnerFun, 2))
+->
+    MatchSpec = [{'_', [], ['$_']}],
     St0 = mfdb_manager:st(Table),
-    St = case is_function(InnerFun, 3) of
-             true -> St0#st{write_lock = true};
-             false -> St0
-         end,
+    St =
+        case is_function(InnerFun, 3) of
+            true -> St0#st{write_lock = true};
+            false -> St0
+        end,
     ffold_type_(St, InnerFun, InnerAcc, MatchSpec).
 
 %% @doc Applies a function to all records in the table matching the MatchSpec
@@ -1507,20 +1691,23 @@ fold(Table, InnerFun, InnerAcc)
 %%          end
 %%        end, AfterRecs).
 %% @end
--spec fold(Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any(), MatchSpec :: ets:match_spec()) -> any().
+-spec fold(
+    Table :: table_name(), InnerFun :: foldfun(), OuterAcc :: any(), MatchSpec :: ets:match_spec()
+) -> any().
 fold(Table, InnerFun, InnerAcc, MatchSpec) ->
     St0 = mfdb_manager:st(Table),
-    St = case is_function(InnerFun, 3) of
-             true -> St0#st{write_lock = true};
-             false -> St0
-         end,
+    St =
+        case is_function(InnerFun, 3) of
+            true -> St0#st{write_lock = true};
+            false -> St0
+        end,
     ffold_type_(St, InnerFun, InnerAcc, MatchSpec).
 
 ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0) ->
     %%CompiledMs = ets:match_spec_compile(MatchSpec),
     {Guards, Binds, Ms} =
         case MatchSpec0 of
-            [{ {{_V, '$1'}} , G, _}] ->
+            [{{{_V, '$1'}}, G, _}] ->
                 {G, [{1, ['$1']}], MatchSpec0};
             [{HP, G, MsRet}] ->
                 {NewHP, NewGuards} = ms_rewrite(HP, G),
@@ -1543,71 +1730,74 @@ ffold_type_(#st{pfx = TabPfx, index = Index} = St, UserFun, UserAcc, MatchSpec0)
             DataFun = ffold_idx_match_fun_(St, IdxMs, RecMatchFun),
             ffold_indexed_(St, DataFun, UserAcc, Start, End);
         no_index ->
-            PkStart = case pk2pfx_(Ms) of
-                          undefined ->
-                              PkStart0;
-                          PkPfx ->
-                              %% io:format("Generated PkPrefix: ~p~nMs: ~p~n", [PkPfx,Ms]),
-                              {pfx, PkPfx}
-                      end,
+            PkStart =
+                case pk2pfx_(Ms) of
+                    undefined ->
+                        PkStart0;
+                    PkPfx ->
+                        %% io:format("Generated PkPrefix: ~p~nMs: ~p~n", [PkPfx,Ms]),
+                        {pfx, PkPfx}
+                end,
             ffold_loop_init_(St, UserFun, UserAcc, RecMs, PkStart, PkEnd)
     end.
 
 ffold_idx_match_fun_(#st{} = St, IdxMs, RecMatchFun) ->
     fun({idx, {{IdxVal, PkVal}} = R}, IAcc) ->
-            case ets:match_spec_run([R], IdxMs) of
-                [] ->
-                    %% Did not match
-                    IAcc;
-                [{{IdxVal, PkVal}}] ->
-                    %% Matched
-                    RecMatchFun(St, PkVal, IAcc)
-            end
+        case ets:match_spec_run([R], IdxMs) of
+            [] ->
+                %% Did not match
+                IAcc;
+            [{{IdxVal, PkVal}}] ->
+                %% Matched
+                RecMatchFun(St, PkVal, IAcc)
+        end
     end.
 
 ffold_rec_match_fun_(TabPfx, RecMs, UserFun) ->
     fun(#st{db = Db, write_lock = WLock0} = St, PkVal, Acc0) ->
-            WLock = mfdb_lib:to_bool(WLock0),
-            EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
-            Tx = erlfdb:create_transaction(Db),
-            case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
-                not_found ->
-                    %% This should only happen with a dead index
-                    %% entry (data deleted after we got index)
-                    mfdb_lib:wait(erlfdb:cancel(Tx)),
-                    Acc0;
-                EncVal0 ->
-                    Rec0 = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, EncVal0)),
-                    case ets:match_spec_run([Rec0], RecMs) of
-                        [] ->
-                            %% Did not match specification
+        WLock = mfdb_lib:to_bool(WLock0),
+        EncKey = mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, PkVal}),
+        Tx = erlfdb:create_transaction(Db),
+        case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
+            not_found ->
+                %% This should only happen with a dead index
+                %% entry (data deleted after we got index)
+                mfdb_lib:wait(erlfdb:cancel(Tx)),
+                Acc0;
+            EncVal0 ->
+                Rec0 = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, EncVal0)),
+                case ets:match_spec_run([Rec0], RecMs) of
+                    [] ->
+                        %% Did not match specification
+                        ok = mfdb_lib:commit(Tx),
+                        Acc0;
+                    [Matched] when WLock =:= false ->
+                        %% Matched specification
+                        ok = mfdb_lib:commit(Tx),
+                        UserFun(Matched, Acc0);
+                    [Matched] when WLock =:= true ->
+                        %% Matched specification
+                        ok = mfdb_lib:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+                        ok = mfdb_lib:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+                        try
+                            NewAcc = mfdb_lib:wait(UserFun(St#st{db = Tx}, Matched, Acc0)),
                             ok = mfdb_lib:commit(Tx),
-                            Acc0;
-                        [Matched] when WLock =:= false ->
-                            %% Matched specification
-                            ok = mfdb_lib:commit(Tx),
-                            UserFun(Matched, Acc0);
-                        [Matched] when WLock =:= true ->
-                            %% Matched specification
-                            ok = mfdb_lib:wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
-                            ok = mfdb_lib:wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
-                            try
-                                NewAcc = mfdb_lib:wait(UserFun(St#st{db = Tx}, Matched, Acc0)),
-                                ok = mfdb_lib:commit(Tx),
-                                %%io:format("ffold_rec_match_fun_~p ~p commited~n", [Tx, self()]),
-                                NewAcc
-                            catch
-                                error:{erlfdb_error, Code} ->
-                                    error_logger:error_msg("ffold_rec_match_fun_Fold error ~p ~p", [Tx, mfdb_lib:fdb_err(Code)]),
-                                    mfdb_lib:wait(erlfdb:on_error(Tx, Code), 5000),
-                                    ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
-                                    Acc0;
-                                _E:_M:_Stack ->
-                                    ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
-                                    Acc0
-                            end
-                    end
-            end
+                            %%io:format("ffold_rec_match_fun_~p ~p commited~n", [Tx, self()]),
+                            NewAcc
+                        catch
+                            error:{erlfdb_error, Code} ->
+                                error_logger:error_msg("ffold_rec_match_fun_Fold error ~p ~p", [
+                                    Tx, mfdb_lib:fdb_err(Code)
+                                ]),
+                                mfdb_lib:wait(erlfdb:on_error(Tx, Code), 5000),
+                                ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
+                                Acc0;
+                            _E:_M:_Stack ->
+                                ok = mfdb_lib:wait(erlfdb:cancel(Tx)),
+                                Acc0
+                        end
+                end
+        end
     end.
 
 ffold_limit_(#st{write_lock = true}) -> 1;
@@ -1623,7 +1813,9 @@ ffold_idx_apply_fun_([{K, _V} | Rest], TabPfx, MatchFun, Acc) ->
             ffold_idx_apply_fun_(Rest, TabPfx, MatchFun, NAcc)
     end.
 
-ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, {_, Start}, {_, End}) ->
+ffold_indexed_(
+    #st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, {_, Start}, {_, End}
+) ->
     WLock = mfdb_lib:to_bool(WLock0),
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St)}]) of
         [] ->
@@ -1645,7 +1837,9 @@ ffold_indexed_(#st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, I
             end
     end.
 
-ffold_indexed_cont_(#st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, Start0, End) ->
+ffold_indexed_cont_(
+    #st{db = Db, pfx = TabPfx, write_lock = WLock0} = St, MatchFun, InAcc, Start0, End
+) ->
     WLock = mfdb_lib:to_bool(WLock0),
     Start = erlfdb_key:first_greater_than(Start0),
     case erlfdb:get_range(Db, Start, End, [{limit, ffold_limit_(St) + 1}]) of
@@ -1719,7 +1913,9 @@ ffold_loop_cont_(#st{} = St, InnerFun, InnerAcc, Ms, PkEnd, LastKey, KeyVals) ->
 
 ffold_loop_recs([], _St, _InnerFun, _Ms, InnerAcc) ->
     InnerAcc;
-ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock0} = St, InnerFun, Ms, InnerAcc) ->
+ffold_loop_recs(
+    [{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock0} = St, InnerFun, Ms, InnerAcc
+) ->
     WLock = mfdb_lib:to_bool(WLock0),
     case ets:match_spec_run([Rec], Ms) of
         [] ->
@@ -1775,30 +1971,33 @@ ffold_loop_recs([{EncKey, _Key, Rec} | Rest], #st{write_lock = WLock0} = St, Inn
 
 ffold_apply_with_transaction_(#st{db = Db, pfx = TblPfx} = St, EncKey, InnerFun, Ms, InnerAcc) ->
     erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              ok = erlfdb:add_read_conflict_key(Tx, EncKey),
-              ok = erlfdb:add_write_conflict_key(Tx, EncKey),
-              case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
-                  not_found ->
-                      %% move on.... Already deleted by something else
-                      InnerAcc;
-                  EncVal ->
-                      Rec2 = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
-                      case ets:match_spec_run([Rec2], Ms) of
-                          [Match] ->
-                              try
-                                  InnerFun(St#st{db = Tx}, Match, InnerAcc)
-                              catch
-                                  E:M:Stack ->
-                                      error_logger:error_msg("Err applying InnerFun ~p", [{E,M,Stack}]),
-                                      InnerAcc
-                              end;
-                          _ ->
-                              InnerAcc
-                      end
-              end
-      end).
+        Db,
+        fun(Tx) ->
+            ok = erlfdb:add_read_conflict_key(Tx, EncKey),
+            ok = erlfdb:add_write_conflict_key(Tx, EncKey),
+            case mfdb_lib:wait(erlfdb:get(Tx, EncKey)) of
+                not_found ->
+                    %% move on.... Already deleted by something else
+                    InnerAcc;
+                EncVal ->
+                    Rec2 = mfdb_lib:wait(mfdb_lib:decode_val(Tx, TblPfx, EncVal)),
+                    case ets:match_spec_run([Rec2], Ms) of
+                        [Match] ->
+                            try
+                                InnerFun(St#st{db = Tx}, Match, InnerAcc)
+                            catch
+                                E:M:Stack ->
+                                    error_logger:error_msg("Err applying InnerFun ~p", [
+                                        {E, M, Stack}
+                                    ]),
+                                    InnerAcc
+                            end;
+                        _ ->
+                            InnerAcc
+                    end
+            end
+        end
+    ).
 
 range_start(TabPfx, {gt, X}) ->
     {mfdb_lib:encode_key(TabPfx, {?DATA_PREFIX, X}), gt};
@@ -1822,58 +2021,79 @@ range_end(TabPfx, X) ->
 
 first_(#st{db = Db, pfx = TabPfx} = St, PkStart) ->
     erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              StartKey = range_start(TabPfx, PkStart),
-              EndKey = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})),
-              case mfdb_lib:wait(erlfdb:get_range(Tx, StartKey, EndKey, [{snapshot, false}, {limit, ffold_limit_(St)}])) of
-                  [] ->
-                      '$end_of_table';
-                  KeyVals when is_list(KeyVals) ->
-                      [{EncKey,
-                        mfdb_lib:decode_key(TabPfx, EncKey),
-                        mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
-                       || {EncKey, Val} <- KeyVals];
-                  _Other ->
-                      error_logger:error_msg("unexpected: ~p", [_Other]),
-                      '$end_of_table'
-              end
-      end).
+        Db,
+        fun(Tx) ->
+            StartKey = range_start(TabPfx, PkStart),
+            EndKey = erlfdb_key:strinc(mfdb_lib:encode_prefix(TabPfx, {?DATA_PREFIX, ?FDB_WC})),
+            case
+                mfdb_lib:wait(
+                    erlfdb:get_range(Tx, StartKey, EndKey, [
+                        {snapshot, false}, {limit, ffold_limit_(St)}
+                    ])
+                )
+            of
+                [] ->
+                    '$end_of_table';
+                KeyVals when is_list(KeyVals) ->
+                    [
+                        {EncKey, mfdb_lib:decode_key(TabPfx, EncKey),
+                            mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
+                     || {EncKey, Val} <- KeyVals
+                    ];
+                _Other ->
+                    error_logger:error_msg("unexpected: ~p", [_Other]),
+                    '$end_of_table'
+            end
+        end
+    ).
 
 next_(#st{db = Db, pfx = TabPfx} = St, PrevKey, PkEnd) ->
     erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              SKey = range_start(TabPfx, mfdb_lib:decode_key(TabPfx, PrevKey)),
-              EKey = range_end(TabPfx, PkEnd),
-              try mfdb_lib:wait(erlfdb:get_range(Tx, SKey, EKey, [{snapshot, false}, {limit, ffold_limit_(St)+1}])) of
-                  [] ->
-                      '$end_of_table';
-                  [{K, _V}] when K =:= PrevKey ->
-                      '$end_of_table';
-                  KeyVals0 ->
-                      KeyVals = lists:keydelete(PrevKey, 1, KeyVals0),
-                      [{EncKey,
-                        mfdb_lib:decode_key(TabPfx, EncKey),
-                        mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
-                       || {EncKey, Val} <- KeyVals]
-              catch
-                  _E:_M:_Stack ->
-                      %% error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}]),
-                      '$end_of_table'
-              end
-      end).
+        Db,
+        fun(Tx) ->
+            SKey = range_start(TabPfx, mfdb_lib:decode_key(TabPfx, PrevKey)),
+            EKey = range_end(TabPfx, PkEnd),
+            try
+                mfdb_lib:wait(
+                    erlfdb:get_range(Tx, SKey, EKey, [
+                        {snapshot, false}, {limit, ffold_limit_(St) + 1}
+                    ])
+                )
+            of
+                [] ->
+                    '$end_of_table';
+                [{K, _V}] when K =:= PrevKey ->
+                    '$end_of_table';
+                KeyVals0 ->
+                    KeyVals = lists:keydelete(PrevKey, 1, KeyVals0),
+                    [
+                        {EncKey, mfdb_lib:decode_key(TabPfx, EncKey),
+                            mfdb_lib:wait(mfdb_lib:decode_val(Tx, TabPfx, Val))}
+                     || {EncKey, Val} <- KeyVals
+                    ]
+            catch
+                _E:_M:_Stack ->
+                    %% error_logger:error_msg("Error in next_/3: ~p", [{E,M,Stack}]),
+                    '$end_of_table'
+            end
+        end
+    ).
 
 %% Creates the longest possible prefix match for tuple-based pk field
-pk2pfx_([{Rec, Guards0, _}])
-  when is_tuple(Rec) andalso
-       is_list(Guards0) ->
+pk2pfx_([{Rec, Guards0, _}]) when
+    is_tuple(Rec) andalso
+        is_list(Guards0)
+->
     Guards = lists:foldl(
-               fun({'=:=', K, V}, Acc) ->
-                       [{K, V} | Acc];
-                  (_, Acc) ->
-                       Acc
-               end, [], Guards0),
+        fun
+            ({'=:=', K, V}, Acc) ->
+                [{K, V} | Acc];
+            (_, Acc) ->
+                Acc
+        end,
+        [],
+        Guards0
+    ),
     [_, Pk | _Tl] = tuple_to_list(Rec),
     case is_tuple(Pk) of
         true ->

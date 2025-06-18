@@ -15,9 +15,11 @@
 -module(mfdb_conn).
 
 %% API
--export([init/0,
-         connection/0,
-         connection/1]).
+-export([
+    init/0,
+    connection/0,
+    connection/1
+]).
 
 -include("mfdb.hrl").
 
@@ -37,12 +39,16 @@ init() ->
                             {error, missing_cluster_definition};
                         {cluster, Cluster} ->
                             Conn = #conn{
-                                      key           = AppKey,
-                                      cluster       = Cluster,
-                                      tls_key_path  = proplists:get_value(tls_key_path, Settings, undefined),
-                                      tls_cert_path = proplists:get_value(tls_cert_path, Settings, undefined),
-                                      tls_ca_path   = proplists:get_value(tls_ca_path, Settings, undefined)
-                                     },
+                                key = AppKey,
+                                cluster = Cluster,
+                                tls_key_path = proplists:get_value(
+                                    tls_key_path, Settings, undefined
+                                ),
+                                tls_cert_path = proplists:get_value(
+                                    tls_cert_path, Settings, undefined
+                                ),
+                                tls_ca_path = proplists:get_value(tls_ca_path, Settings, undefined)
+                            },
                             ok = persistent_term:put(mfdb_conn, Conn),
                             ok = load_fdb_nif_(Conn)
                     end
@@ -55,14 +61,17 @@ load_fdb_nif_(#conn{tls_key_path = undefined}) ->
     try
         erlfdb_nif:init(),
         ok
-    catch error:{reload, _} ->
+    catch
+        error:{reload, _} ->
             io:format("NIF already loaded~n"),
             ok
     end;
 load_fdb_nif_(#conn{tls_key_path = KeyPath, tls_cert_path = CertPath, tls_ca_path = CAPath}) ->
-    FdbNetworkOptions = [{tls_ca_bytes, fread(CAPath)},
-                         {tls_key_bytes, fread(KeyPath)},
-                         {tls_cert_bytes, fread(CertPath)}],
+    FdbNetworkOptions = [
+        {tls_ca_bytes, fread(CAPath)},
+        {tls_key_bytes, fread(KeyPath)},
+        {tls_cert_bytes, fread(CertPath)}
+    ],
     try
         ok = erlfdb_nif:init_manual(FdbNetworkOptions),
         ok

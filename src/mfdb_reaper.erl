@@ -412,7 +412,7 @@ orphaned_fold_(T, R, LastKey, End, InAcc) ->
         _ ->
             NTotal = maps:get(total, NAcc, 0) + Cnt,
             io:format("~s ~w ~p ~p~n", [
-                T, NTotal, NAcc, catch mfdb_lib:decode_key(R#st.pfx, NLastKey)
+                T, NTotal, maps:without([del_ids], NAcc), catch mfdb_lib:decode_key(R#st.pfx, NLastKey)
             ]),
             orphaned_fold_(T, R, NLastKey, End, NAcc#{total => NTotal})
     end.

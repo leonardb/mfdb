@@ -299,7 +299,7 @@ cleanup_orphaned(T) ->
                     end,
                 Res = orphaned_fold_(T, R, Start, End, #{total => 0, del_count => 0, del_ids => []}),
                 io:format("END: ~p ~p~n", [I, Res]),
-                Pids = [spawn_link(mfdb, delete, T, K) || K <- maps:get(del_ids, Res, [])],
+                Pids = [spawn_link(mfdb, delete, [T, K]) || K <- maps:get(del_ids, Res, [])],
                 wait_for(Pids),
                 Acc#{{T, I} => maps:without([del_ids, del_count], Res)}
             end,
@@ -332,7 +332,7 @@ orphaned_fold_(T, R, LastKey, End, InAcc) ->
                             io:format("Deleting ~p orphaned records from table ~p~n", [
                                 DelCount, T
                             ]),
-                            Pids = [spawn_link(mfdb, delete, T, Dk) || Dk <- DelIds],
+                            Pids = [spawn_link(mfdb, delete, [T, Dk]) || Dk <- DelIds],
                             wait_for(Pids),
                             Acc0#{
                                 del_ids => [],

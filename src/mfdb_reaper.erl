@@ -358,10 +358,10 @@ orphaned_fold_(T, R, LastKey, End, InAcc) ->
                                                 del_ids => [Pk | maps:get(del_ids, Acc1, [])]
                                             };
                                         _ ->
-                                            ok
+                                            Acc1
                                     end;
                                 _ ->
-                                    ok
+                                    Acc1
                             end;
                         ttl_to_key_pfx ->
                             case KtVal of
@@ -377,13 +377,13 @@ orphaned_fold_(T, R, LastKey, End, InAcc) ->
                                                 del_ids => [Pk | maps:get(del_ids, Acc1, [])]
                                             };
                                         _ ->
-                                            ok
+                                            Acc1
                                     end;
                                 _ ->
-                                    ok
+                                    Acc1
                             end;
                         _ ->
-                            ok
+                            Acc1
                     end,
                 Nc = C + 1,
                 NAcc =

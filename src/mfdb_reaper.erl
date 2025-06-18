@@ -195,43 +195,40 @@ reap_expired_(Table, SegmentSize, ExpireTstamp) ->
     end.
 
 %% @private
-reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTstamp, SegmentSize) ->
-    erlfdb:transactional(
-      Db,
-      fun(Tx) ->
-              KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, SegmentSize}])),
-              LastKey = lists:foldl(
-                          fun({EncKey, <<>>}, LastKey) ->
-                                  %% Delete the actual expired record
-                                  <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
-                                  <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
-                                  case sext:decode(EncValue) of
-                                      {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < ExpireTstamp ->
-                                          try
-                                              ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
-                                              %% Key2Ttl have to be removed individually (now done in mfdb_lib:delete/2)
-                                              %%TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                                              %%ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
-                                              mfdb_lib:wait(erlfdb:clear(Tx, EncKey)),
-                                              mfdb_lib:wait(erlfdb:commit(Tx)),
-                                              EncKey
-                                          catch
-                                              _E:_M:_Stack ->
-                                                  LastKey
-                                          end;
-                                      _Val ->
-                                          LastKey
-                                  end
-                          end, ok, KVs),
-              case LastKey of
-                  ok ->
-                      0;
-                  LastKey ->
-                      Count = length(KVs),
-                      %% mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
-                      Count
-              end
-      end).
+reap_expired_(#st{db = _Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTstamp, SegmentSize) ->
+    #st{db = Tx} = mfdb_lib:mk_tx(St),
+    KVs = mfdb_lib:wait(erlfdb:get_range(Tx, RangeStart, RangeEnd, [{limit, SegmentSize}])),
+    LastKey = lists:foldl(
+                fun({EncKey, <<>>}, LastKey) ->
+                        %% Delete the actual expired record
+                        <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+                        <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
+                        case sext:decode(EncValue) of
+                            {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < ExpireTstamp ->
+                                try
+                                    ok = mfdb_lib:delete(St#st{db = Tx}, RecKey),
+                                    %% Key2Ttl have to be removed individually (now done in mfdb_lib:delete/2)
+                                    %%TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
+                                    %%ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
+                                    mfdb_lib:wait(erlfdb:clear(Tx, EncKey)),
+                                    EncKey
+                                catch
+                                    _E:_M:_Stack ->
+                                        LastKey
+                                end;
+                            _Val ->
+                                LastKey
+                        end
+                end, ok, KVs),
+    mfdb_lib:wait(erlfdb:commit(Tx)),
+    case LastKey of
+        ok ->
+            0;
+        LastKey ->
+            Count = length(KVs),
+            %% mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
+            Count
+    end.
 
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

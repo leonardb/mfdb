@@ -411,8 +411,8 @@ delete(#st{db = ?IS_DB, tab = Tab} = OldSt, PkValue, ReturnNotExists) ->
 delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNotExists) ->
     %% deleting a data item
     EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
-    ok = wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
-    ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    %ok = wait(erlfdb:add_read_conflict_key(Tx, EncKey)),
+    %ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
     wait(ttl_remove(Tx, TabPfx, ignore_me, PkValue)),
     {IncSize, IncCount} =
         case wait(erlfdb:get(Tx, EncKey)) of

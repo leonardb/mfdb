@@ -276,7 +276,7 @@ inside_reap_window() ->
 cleanup_orphaned(T) ->
     spawn_link(fun() ->
         mfdb:connect(T),
-        R = persistent_term:get({mfdb, smlib:to_bin(T)}),
+        R = persistent_term:get({mfdb, atom_to_binary(T)}),
         Final = lists:foldl(
             fun(I, Acc) ->
                 Start =

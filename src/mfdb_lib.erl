@@ -385,11 +385,14 @@ delete(OldSt, PkValue) ->
     delete(OldSt, PkValue, false).
 
 -spec delete(#st{}, any(), boolean()) -> ok | {error, atom()}.
-delete(#st{db = ?IS_DB, tab = Tab} = OldSt, PkValue, ReturnNotExists) ->
+delete(OldSt, PkValue, ReturnNotExists) ->
+    delete_(OldSt, PkValue, ReturnNotExists, 0).
+
+delete_(#st{db = ?IS_DB, tab = Tab} = OldSt, PkValue, ReturnNotExists, Cnt) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
     Resp =
-        case delete(NewSt, PkValue, ReturnNotExists) of
+        case delete_(NewSt, PkValue, ReturnNotExists, Cnt) of
             {error, not_found} when ReturnNotExists ->
                 {error, not_found};
             {error, not_found} ->
@@ -405,10 +408,19 @@ delete(#st{db = ?IS_DB, tab = Tab} = OldSt, PkValue, ReturnNotExists) ->
             ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
             ErrAtom = mfdb_lib:fdb_err(ErrCode),
             wait(erlfdb:cancel(FdbTx)),
-            error_logger:error_msg("Delete failed: ~p ~p ~p", [Tab, PkValue, ErrAtom]),
-            delete(OldSt, PkValue, ReturnNotExists)
+            case Cnt >= 5 of
+                true ->
+                    error_logger:error_msg(
+                        "Delete failed: tab: ~p pk: ~p error: ~p failcount: ~w", [
+                            Tab, PkValue, ErrAtom, Cnt + 1
+                        ]
+                    );
+                false ->
+                    ok
+            end,
+            delete_(OldSt, PkValue, ReturnNotExists, Cnt + 1)
     end;
-delete(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNotExists) ->
+delete_(#st{db = ?IS_TX = Tx, pfx = TabPfx, index = Indexes}, PkValue, _ReturnNotExists, _Cnt) ->
     %% deleting a data item
     EncKey = encode_key(TabPfx, {?DATA_PREFIX, PkValue}),
     ok = wait(erlfdb:add_read_conflict_key(Tx, EncKey)),

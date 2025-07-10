@@ -297,7 +297,9 @@ cleanup_orphaned(T) ->
                                 mfdb_lib:encode_prefix(R#st.pfx, {<<"~">>, <<"~">>, <<"~">>})
                             )
                     end,
-                Res = orphaned_fold_(T, R, Start, End, #{total => 0, del_total => 0, del_count => 0, del_ids => []}),
+                Res = orphaned_fold_(T, R, Start, End, #{
+                    total => 0, del_total => 0, del_count => 0, del_ids => []
+                }),
                 io:format("END: ~p ~p~n", [I, Res]),
                 Pids = [spawn_link(mfdb, delete, [T, K]) || K <- maps:get(del_ids, Res, [])],
                 wait_for(Pids),
@@ -414,7 +416,10 @@ orphaned_fold_(T, R, LastKey, End, InAcc) ->
         _ ->
             NTotal = maps:get(total, NAcc, 0) + Cnt,
             io:format("~s ~w ~p ~p~n", [
-                T, NTotal, maps:without([del_ids], NAcc), catch mfdb_lib:decode_key(R#st.pfx, NLastKey)
+                T,
+                NTotal,
+                maps:without([del_ids], NAcc),
+                catch mfdb_lib:decode_key(R#st.pfx, NLastKey)
             ]),
             orphaned_fold_(T, R, NLastKey, End, NAcc#{total => NTotal})
     end.

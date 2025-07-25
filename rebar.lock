@@ -1,11 +1,11 @@
 {"1.2.0",
 [{<<"erlfdb">>,
   {git,"https://github.com/leonardb/couchdb-erlfdb.git",
-       {ref,"759a9a6512059bbb57fb24c0fee3e651bf4f7c4e"}},
+       {ref,"2a36bab865144aead27b0935f83639be7c66a9ef"}},
   0},
  {<<"gproc">>,
   {git,"https://github.com/uwiger/gproc.git",
-       {ref,"3737f2b958a5908d7a3870046ae162c5b9bf971c"}},
+       {ref,"9f71a37fce4d58480a742b44458e4937c77f55c5"}},
   0},
  {<<"jsx">>,{pkg,<<"jsx">>,<<"3.0.0">>},0},
  {<<"sext">>,{pkg,<<"sext">>,<<"1.8.0">>},0}]}.

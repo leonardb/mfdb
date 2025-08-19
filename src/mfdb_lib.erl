@@ -391,18 +391,32 @@ delete(OldSt, PkValue, ReturnNotExists) ->
 delete_(#st{db = ?IS_DB, tab = Tab} = OldSt, PkValue, ReturnNotExists, Cnt) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
-    Resp =
-        case delete_(NewSt, PkValue, ReturnNotExists, Cnt) of
+    try delete_(NewSt, PkValue, ReturnNotExists, Cnt) of
             {error, not_found} when ReturnNotExists ->
                 {error, not_found};
             {error, not_found} ->
                 ok;
             ok ->
-                ok
-        end,
-    try wait(erlfdb:commit(FdbTx)) of
-        ok ->
-            Resp
+            try wait(erlfdb:commit(FdbTx)) of
+                ok ->
+                    ok
+            catch
+                error:{erlfdb_error, ErrCode} ->
+                    ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),
+                    ErrAtom = mfdb_lib:fdb_err(ErrCode),
+                    wait(erlfdb:cancel(FdbTx)),
+                    case Cnt >= 5 of
+                        true ->
+                            error_logger:error_msg(
+                                "Delete failed: tab: ~p pk: ~p error: ~p failcount: ~w", [
+                                    Tab, PkValue, ErrAtom, Cnt + 1
+                                ]
+                            );
+                        false ->
+                            ok
+                    end,
+                    delete_(OldSt, PkValue, ReturnNotExists, Cnt + 1)
+            end
     catch
         error:{erlfdb_error, ErrCode} ->
             ok = wait(erlfdb:on_error(FdbTx, ErrCode), 5000),

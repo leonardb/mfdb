@@ -392,11 +392,11 @@ delete_(#st{db = ?IS_DB, tab = Tab} = OldSt, PkValue, ReturnNotExists, Cnt) ->
     %% deleting a data item
     #st{db = FdbTx} = NewSt = mk_tx(OldSt),
     try delete_(NewSt, PkValue, ReturnNotExists, Cnt) of
-            {error, not_found} when ReturnNotExists ->
-                {error, not_found};
-            {error, not_found} ->
-                ok;
-            ok ->
+        {error, not_found} when ReturnNotExists ->
+            {error, not_found};
+        {error, not_found} ->
+            ok;
+        ok ->
             try wait(erlfdb:commit(FdbTx)) of
                 ok ->
                     ok

@@ -221,38 +221,82 @@ reap_expired_(Table, SegmentSize, ExpireTstamp) ->
 %% @private
 reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTstamp, SegmentSize) ->
     KVs = mfdb_lib:wait(erlfdb:get_range(Db, RangeStart, RangeEnd, [{limit, SegmentSize}])),
-    LastKey = lists:foldl(
-        fun({EncKey, <<>>}, LastKey) ->
-            %% Delete the actual expired record
-            <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
-            <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
-            case sext:decode(EncValue) of
-                {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < ExpireTstamp ->
-                    try
-                        ok = mfdb_lib:delete(St, RecKey),
-                        %% Key2Ttl have to be removed individually (now done in mfdb_lib:delete/2)
-                        %%TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
-                        %%ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
-                        mfdb_lib:wait(erlfdb:clear(Db, EncKey)),
-                        EncKey
-                    catch
-                        _E:_M:_Stack ->
-                            LastKey
-                    end;
-                _Val ->
-                    LastKey
-            end
-        end,
-        ok,
-        KVs
-    ),
-    case LastKey of
+    % LastKey = lists:foldl(
+    %     fun({EncKey, <<>>}, LastKey) ->
+    %         %% Delete the actual expired record
+    %         <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+    %         <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
+    %         case sext:decode(EncValue) of
+    %             {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < ExpireTstamp ->
+    %                 try
+    %                     ok = mfdb_lib:delete(St, RecKey),
+    %                     %% Key2Ttl have to be removed individually (now done in mfdb_lib:delete/2)
+    %                     %%TtlK2T = mfdb_lib:encode_key(TabPfx, {?KEY_TO_TTL_PFX, RecKey}),
+    %                     %%ok = mfdb_lib:wait(erlfdb:clear(Tx, TtlK2T)),
+    %                     mfdb_lib:wait(erlfdb:clear(Db, EncKey)),
+    %                     EncKey
+    %                 catch
+    %                     _E:_M:_Stack ->
+    %                         LastKey
+    %                 end;
+    %             _Val ->
+    %                 LastKey
+    %         end
+    %     end,
+    %     ok,
+    %     KVs
+    % ),
+    %case LastKey of
+    case pmap(St, ExpireTstamp, KVs) of
         ok ->
             0;
         LastKey ->
             Count = length(KVs),
             %% mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
             Count
+    end.
+
+del_fun(#st{db = Db, pfx = TabPfx0} = St, Inc, ExpireTstamp, {EncKey, <<>>}) ->
+    %% Delete the actual expired record
+    <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+    <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
+    case sext:decode(EncValue) of
+        {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < ExpireTstamp ->
+            try
+                ok = mfdb_lib:delete(St, RecKey),
+                mfdb_lib:wait(erlfdb:clear(Db, EncKey)),
+                {Inc, EncKey}
+            catch
+                _E:_M:_Stack ->
+                    {Inc, null}
+            end;
+        _Val ->
+            {Inc, null}
+    end.
+
+pmap(St, ExpireTstamp, KVs) ->
+    process_flag(trap_exit, true),
+    {_, Running} = lists:foldl(
+        fun(KV, {Inc, Acc}) ->
+            {Inc + 1, [{spawn_link(fun() -> exit({normal, del_fun(St, Inc, ExpireTstamp, KV)}) end), Inc} | Acc]}
+        end,
+        {1, []},
+        KVs
+    ),
+    collect(maps:from_list(Running), timer:seconds(90), {0, ok}).
+
+collect(Pids, _Timeout, {_, LastKey}) when map_size(Pids) =:= 0 ->
+    LastKey;
+collect(Pids, Timeout, {X, _} = Last) ->
+    receive
+        {'EXIT', Pid, {_, {_, null}}} ->
+            collect(maps:remove(Pid, Pids), Timeout, Last);
+        {'EXIT', Pid, {_, {Y, _} = New}} when Y > X ->
+            collect(maps:remove(Pid, Pids), Timeout, New);
+        {'EXIT', Pid, {_, {Y, _} = New}} when Y < X ->
+            collect(maps:remove(Pid, Pids), Timeout, Last)
+    after Timeout ->
+        exit(pmap_timeout)
     end.
 
 %%%%%%%%%%%%%%%%%%%%% GEN_SERVER %%%%%%%%%%%%%%%%%%%%%

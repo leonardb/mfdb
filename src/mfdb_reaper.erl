@@ -24,7 +24,8 @@
     debug/1,
     do_reap/1,
     do_reap/2,
-    cleanup_orphaned/1
+    cleanup_orphaned/1,
+    segment_size/2
 ]).
 
 %% gen_server API
@@ -60,6 +61,9 @@
 debug(Table) ->
     gen_server:call(?REAPERPROC(Table), debug).
 
+segment_size(Table, NewSize) when is_integer(NewSize) andalso NewSize > 0 ->
+    gen_server:call(?REAPERPROC(Table), {segment_size, NewSize}, 60_000).
+
 do_reap(Table) ->
     do_reap(Table, #{
         debug => false, segment_size => ?REAP_SEGMENT_SIZE, expire_tstamp => erlang:universaltime()
@@ -88,7 +92,7 @@ init([Table]) ->
             _ ->
                 poll_timer(undefined)
         end,
-    {ok, #{table => Table, poller => Poller}}.
+    {ok, #{table => Table, poller => Poller, segment_size => ?REAP_SEGMENT_SIZE}}.
 
 handle_call(stop, _From, State) ->
     case maps:get(reaper, State, undefined) of
@@ -100,18 +104,20 @@ handle_call(stop, _From, State) ->
             {stop, normal, ok, State}
     end;
 handle_call({do_reap, Table, Opts}, _From, #{table := Table} = State) ->
+    SegmentSize = maps:get(segment_size, Opts, ?REAP_SEGMENT_SIZE),
     Debug = maps:get(debug, Opts, false),
     ExpireTstamp = maps:get(expire_tstamp, Opts, erlang:universaltime()),
-    SegmentSize = maps:get(segment_size, Opts, ?REAP_SEGMENT_SIZE),
+    SegmentSize = maps:get(segment_size, Opts, SegmentSize),
     Pid = spawn(fun() -> reap_expired_loop_(Table, SegmentSize, Debug, ExpireTstamp, 0) end),
     {reply, {ok, Pid}, State};
 handle_call(debug, _From, State) ->
     Debug = maps:get(debug, State, false) =:= false,
     {reply, Debug, State#{debug => Debug}};
+handle_call({segment_size, NewSize}, _From, State) ->
+    {reply, ok, State#{segment_size => NewSize}};
 handle_call(_, _, State) ->
     {reply, error, State}.
 
-%% @private
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -120,9 +126,10 @@ handle_info(timeout, #{table := Table} = State) ->
     %% Non-blocking reaping of expired records from table
     Debug = maps:get(debug, State, false),
     ExpireTstamp = erlang:universaltime(),
-    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE, ExpireTstamp) of
+    SegmentSize = maps:get(segment_size, State, ?REAP_SEGMENT_SIZE),
+    try inside_reap_window() andalso reap_expired_(Table, SegmentSize, ExpireTstamp) of
         false ->
-            ?ndbg(Debug, "Not in reaping window", []),
+            ?ndbg(Debug, "Table ~p not in reaping window", [Table]),
             {noreply, State};
         0 ->
             ?ndbg(Debug, "Table ~p reaping complete", [Table]),
@@ -139,9 +146,10 @@ handle_info(poll, #{table := Table, poller := Poller} = State) ->
     %% Non-blocking reaping of expired records from table
     Debug = maps:get(debug, State, false),
     ExpireTstamp = erlang:universaltime(),
-    try inside_reap_window() andalso reap_expired_(Table, ?REAP_SEGMENT_SIZE, ExpireTstamp) of
+    SegmentSize = maps:get(segment_size, State, ?REAP_SEGMENT_SIZE),
+    try inside_reap_window() andalso reap_expired_(Table, SegmentSize, ExpireTstamp) of
         false ->
-            ?ndbg(Debug, "Not in reaping window", []),
+            ?ndbg(Debug, "Table ~p not in reaping window", [Table]),
             {noreply, State#{poller => poll_timer(Poller)}};
         0 ->
             ?ndbg(Debug, "Table ~p reaping complete", [Table]),

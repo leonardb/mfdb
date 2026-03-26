@@ -23,6 +23,7 @@
     delete/3,
     update/3,
     upsert/3,
+    upsert/4,
     bin_split/1,
     bin_join_parts/1,
     decode_key/2,
@@ -245,39 +246,76 @@ update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
 %% @doc
 %% Update a record. This performs multiple read operations but with a write lock on the key.
 %% @end
-upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert) when is_function(Upsert, 1) ->
+upsert(St, PkValue, Upsert) ->
+    upsert(St, PkValue, Upsert, false).
+    
+upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert, ReturnValue) when is_function(Upsert, 1) ->
     Tx = erlfdb:create_transaction(Db),
-    case upsert(St#st{db = Tx}, PkValue, Upsert) of
-        {error, not_found} ->
+    case upsert(St#st{db = Tx}, PkValue, Upsert, ReturnValue) of
+        {error, _} = Error ->
             ok = wait(erlfdb:cancel(Tx)),
-            {error, not_found};
-        _ ->
-            wait(erlfdb:commit(Tx))
+            Error;
+        Resp ->
+            try wait(erlfdb:commit(Tx)) of
+                ok ->
+                    Resp
+            catch
+                error:{erlfdb_error, 1020}:_Stack ->
+                    error_logger:error_msg("Upsert not commited, retry"),
+                    % {error, commit_failed}
+                    upsert(St, PkValue, Upsert, ReturnValue);
+                error:{erlfdb_error, 1025}:_Stack ->
+                    error_logger:error_msg("Upsert cancelled, retry"),
+                    % {error, commit_failed}
+                    upsert(St, PkValue, Upsert, ReturnValue);
+                E:M:Stack ->
+                    error_logger:error_msg("Upsert commit error: ~p", [{E, M, Stack}]),
+                    {error, commit_failed}
+            end
     end;
-upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx, record_name = RecName} = St, PkValue, Upsert) when
+upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx, record_name = RecName} = St, PkValue, Upsert, ReturnValue) when
     is_function(Upsert, 1)
 ->
     EncKey = mfdb_lib:encode_key(TblPfx, {?DATA_PREFIX, PkValue}),
-    ok = wait(erlfdb:add_write_conflict_key(Tx, EncKey)),
+    %%ok = erlfdb:add_read_conflict_key(Tx, EncKey),
+    %% ok = erlfdb:add_write_conflict_key(Tx, EncKey),
     case wait(erlfdb:get(Tx, EncKey)) of
+        {error, wait_failed} ->
+            %%ok = wait(erlfdb:cancel(Tx)),
+            {error, wait_failed};
         not_found ->
             {ok, Record} = Upsert(null),
             case element(1, Record) =:= RecName of
                 true ->
-                    ok = write(St, PkValue, Record);
+                    ok = write(St, PkValue, Record),
+                    case ReturnValue of
+                        true ->
+                            {ok, Record};
+                        false ->
+                            ok
+                    end;
                 false ->
-                    ok = wait(erlfdb:cancel(Tx)),
                     {error, mismatched_record}
             end;
         EncVal ->
             DecodedVal = mfdb_lib:decode_val(Tx, TblPfx, EncVal),
-            {ok, Record} = Upsert(DecodedVal),
-            case [RecName, RecName] =:= [element(1, DecodedVal), element(1, Record)] of
-                false ->
-                    ok = wait(erlfdb:cancel(Tx)),
-                    {error, mismatched_record};
-                true ->
-                    ok = write(St, PkValue, Record)
+            case Upsert(DecodedVal) of
+                {ok, Record} ->
+                    case [RecName, RecName] =:= [element(1, DecodedVal), element(1, Record)] of
+                        false ->
+                            ok = wait(erlfdb:cancel(Tx)),
+                            {error, mismatched_record};
+                        true ->
+                            ok = write(St, PkValue, Record),
+                            case ReturnValue of
+                                true ->
+                                    {ok, Record};
+                                false ->
+                                    ok
+                            end
+                    end;
+                Error ->
+                    Error
             end
     end.
 

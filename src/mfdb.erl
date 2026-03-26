@@ -37,7 +37,7 @@
 
 -export([insert/2]).
 -export([update/3]).
--export([upsert/3]).
+-export([upsert/3, upsert/4]).
 -export([delete/2]).
 -export([delete_if_exists/2]).
 
@@ -325,16 +325,19 @@ update(
 %% the provided fun will be 1-arity with signature fun(null | record()) -> {ok, record()}
 -spec upsert(TableOrTx :: table_name() | st(), Key :: any(), function()) ->
     ok | {error, mismatched_record}.
-upsert(Table, Key, Fun) when
+upsert(Table, Key, Fun) ->
+    upsert(Table, Key, Fun, false).
+
+upsert(Table, Key, Fun, ReturnValue) when
     is_atom(Table) andalso
         is_function(Fun, 1)
 ->
     #st{} = St = mfdb_manager:st(Table),
-    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun);
-upsert(#st{db = ?IS_TX} = St, Key, Fun) when
+    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun, ReturnValue);
+upsert(#st{db = ?IS_TX} = St, Key, Fun, ReturnValue) when
     is_function(Fun, 1)
 ->
-    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun).
+    mfdb_lib:upsert(St#st{write_lock = true}, Key, Fun, ReturnValue).
 
 %% @private
 %% Assign the values in changes to the correct positions in the ChangeTuple

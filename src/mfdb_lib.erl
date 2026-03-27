@@ -303,7 +303,6 @@ upsert(#st{db = ?IS_TX = Tx, pfx = TblPfx, record_name = RecName} = St, PkValue,
                 {ok, Record} ->
                     case [RecName, RecName] =:= [element(1, DecodedVal), element(1, Record)] of
                         false ->
-                            ok = wait(erlfdb:cancel(Tx)),
                             {error, mismatched_record};
                         true ->
                             ok = write(St, PkValue, Record),

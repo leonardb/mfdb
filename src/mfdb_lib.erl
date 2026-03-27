@@ -249,7 +249,7 @@ update(#st{db = ?IS_TX = Tx, pfx = TblPfx} = St, PkValue, UpdateRec) ->
 upsert(St, PkValue, Upsert) ->
     upsert(St, PkValue, Upsert, false).
     
-upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert, ReturnValue) when is_function(Upsert, 1) ->
+upsert(#st{db = ?IS_DB = Db, record_name = RecName, tab = TableId} = St, PkValue, Upsert, ReturnValue) when is_function(Upsert, 1) ->
     Tx = erlfdb:create_transaction(Db),
     case upsert(St#st{db = Tx}, PkValue, Upsert, ReturnValue) of
         {error, _} = Error ->
@@ -261,11 +261,11 @@ upsert(#st{db = ?IS_DB = Db} = St, PkValue, Upsert, ReturnValue) when is_functio
                     Resp
             catch
                 error:{erlfdb_error, 1020}:_Stack ->
-                    error_logger:error_msg("Upsert not commited, retry"),
+                    error_logger:error_msg("Upsert not commited, retry: ~p ~p ~p", [RecName, TableId, PkValue]),
                     % {error, commit_failed}
                     upsert(St, PkValue, Upsert, ReturnValue);
                 error:{erlfdb_error, 1025}:_Stack ->
-                    error_logger:error_msg("Upsert cancelled, retry"),
+                    error_logger:error_msg("Upsert cancelled, retry: ~p ~p ~p", [RecName, TableId, PkValue]),
                     % {error, commit_failed}
                     upsert(St, PkValue, Upsert, ReturnValue);
                 E:M:Stack ->

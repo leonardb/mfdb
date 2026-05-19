@@ -219,12 +219,12 @@ reap_expired_(Table, SegmentSize, ExpireTstamp) ->
     end.
 
 %% @private
-reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTstamp, SegmentSize) ->
+reap_expired_(#st{db = Db, pfx = _TabPfx0} = St, RangeStart, RangeEnd, ExpireTstamp, SegmentSize) ->
     KVs = mfdb_lib:wait(erlfdb:get_range(Db, RangeStart, RangeEnd, [{limit, SegmentSize}])),
     % LastKey = lists:foldl(
     %     fun({EncKey, <<>>}, LastKey) ->
     %         %% Delete the actual expired record
-    %         <<PfxBytes:8, TabPfx/binary>> = TabPfx0,
+    %         <<PfxBytes:8, TabPfx/binary>> = _TabPfx0,
     %         <<PfxBytes:8, TabPfx:PfxBytes/binary, EncValue/binary>> = EncKey,
     %         case sext:decode(EncValue) of
     %             {?TTL_TO_KEY_PFX, Expires, RecKey} when Expires < ExpireTstamp ->
@@ -250,7 +250,7 @@ reap_expired_(#st{db = Db, pfx = TabPfx0} = St, RangeStart, RangeEnd, ExpireTsta
     case pmap(St, ExpireTstamp, KVs) of
         ok ->
             0;
-        LastKey ->
+        _LastKey ->
             Count = length(KVs),
             %% mfdb_lib:wait(erlfdb:clear_range(Tx, RangeStart, erlfdb_key:strinc(LastKey))),
             Count
@@ -293,7 +293,7 @@ collect(Pids, Timeout, {X, _} = Last) ->
             collect(maps:remove(Pid, Pids), Timeout, Last);
         {'EXIT', Pid, {_, {Y, _} = New}} when Y > X ->
             collect(maps:remove(Pid, Pids), Timeout, New);
-        {'EXIT', Pid, {_, {Y, _} = New}} when Y < X ->
+        {'EXIT', Pid, {_, {Y, _} = _New}} when Y < X ->
             collect(maps:remove(Pid, Pids), Timeout, Last)
     after Timeout ->
         exit(pmap_timeout)
